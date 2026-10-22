@@ -1,0 +1,20 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: plong_elven
+      POSTGRES_USER: plong_elven
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - plong_elven_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U plong_elven -d plong_elven"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  plong_elven_postgres:

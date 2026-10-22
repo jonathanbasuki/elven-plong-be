@@ -1,0 +1,36 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+.ruff_cache/
+.pytest_cache/
+.DS_Store
+
+# secret & config lokal
+.env
+.env.*
+!.env.example
+secrets/
+*.p8
+*.pem
+*.key
+infra/mediamtx.yml
+
+# artefak besar / data
+models/*
+!models/MODELS.md
+*.pt
+*.onnx
+*.mlpackage
+*.dump
+data/
+uploads/
+runs/
+tools/
+*.mp4
