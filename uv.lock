@@ -1709,18 +1709,19 @@ api = [
     { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "uvicorn", extra = ["standard"] },
 ]
+cctv = [
+    { name = "httpx" },
+    { name = "numpy" },
+    { name = "opencv-python" },
+    { name = "supervision" },
+    { name = "ultralytics" },
+]
 dev = [
     { name = "httpx" },
     { name = "pre-commit" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "ruff" },
-]
-worker = [
-    { name = "httpx" },
-    { name = "opencv-python" },
-    { name = "supervision" },
-    { name = "ultralytics" },
 ]
 
 [package.metadata]
@@ -1740,18 +1741,19 @@ api = [
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.1.6" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.54.0" },
 ]
+cctv = [
+    { name = "httpx", specifier = ">=0.28.1" },
+    { name = "numpy", specifier = ">=2.3" },
+    { name = "opencv-python", specifier = ">=5.0.0.93" },
+    { name = "supervision", specifier = ">=0.31.1" },
+    { name = "ultralytics", specifier = ">=8.4.183" },
+]
 dev = [
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "pre-commit", specifier = ">=4.7.0" },
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "pytest-asyncio", specifier = ">=1.4.0" },
     { name = "ruff", specifier = ">=0.17.1" },
-]
-worker = [
-    { name = "httpx", specifier = ">=0.28.1" },
-    { name = "opencv-python", specifier = ">=5.0.0.93" },
-    { name = "supervision", specifier = ">=0.31.1" },
-    { name = "ultralytics", specifier = ">=8.4.183" },
 ]
 
 [[package]]
