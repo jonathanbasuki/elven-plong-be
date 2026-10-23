@@ -1,4 +1,9 @@
-"""Ported from plong-model/test_counter.py. Skipped unless the cctv group is installed."""
+"""Ported from plong-model/test_counter.py. Skipped unless the cctv group is installed.
+
+Uses an inline zone config rather than zones.json/zones.example.json: those are files
+meant for users to edit for a real deployment, not fixtures these assertions should
+depend on.
+"""
 
 import json
 import os
@@ -10,6 +15,23 @@ np = pytest.importorskip("numpy")
 pytest.importorskip("cv2")
 
 from plong_elven.cctv import zones as z
+
+TWO_ZONE_CFG = {
+    "version": 1,
+    "anchor": "bottom_center",
+    "zones": [
+        {
+            "id": "z1",
+            "name": "Left",
+            "polygon": [[0.0, 0.0], [0.5, 0.0], [0.5, 1.0], [0.0, 1.0]],
+        },
+        {
+            "id": "z2",
+            "name": "Right",
+            "polygon": [[0.5, 0.0], [1.0, 0.0], [1.0, 1.0], [0.5, 1.0]],
+        },
+    ],
+}
 
 
 def test_assign_handles_concave_zone_and_edges() -> None:
@@ -46,10 +68,7 @@ def test_assign_handles_concave_zone_and_edges() -> None:
 
 
 def test_counts_scale_to_frame_size() -> None:
-    cfg = z.load_config(
-        os.path.join(os.path.dirname(__file__), "..", "zones.example.json")
-    )
-    p = z.to_pixels(cfg, 1920, 1080)
+    p = z.to_pixels(TWO_ZONE_CFG, 1920, 1080)
     assert p[1][1].tolist() == [1920, 0]
     box = lambda cx, bottom: [cx - 5, bottom - 20, cx + 5, bottom]
     zi = z.assign(
@@ -61,12 +80,9 @@ def test_counts_scale_to_frame_size() -> None:
 
 
 def test_config_round_trips_and_rejects_bad_anchor() -> None:
-    cfg = z.load_config(
-        os.path.join(os.path.dirname(__file__), "..", "zones.example.json")
-    )
     with tempfile.TemporaryDirectory() as d:
         f = os.path.join(d, "z.json")
-        z.save_config(f, cfg["zones"], "center")
+        z.save_config(f, TWO_ZONE_CFG["zones"], "center")
         assert z.load_config(f)["anchor"] == "center"
 
         with open(f, "w") as fh:

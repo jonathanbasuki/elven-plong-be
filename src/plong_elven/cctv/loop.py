@@ -19,30 +19,80 @@ from .client import post_counts, post_frame
 from .detector import Detector
 from .overlay import draw
 
+# Without this, OpenCV's RTSP (FFmpeg) backend has no read timeout: on a stall (e.g. a
+# flaky Wi-Fi link), cap.read() blocks forever instead of failing so the loop can recover.
+# TCP transport also tolerates packet loss better than the UDP default on a lossy link.
+os.environ.setdefault(
+    "OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp|stimeout;5000000"
+)
+RECONNECT_DELAY = 2.0  # seconds to wait before reopening a dropped source
+ZONES_RELOAD_INTERVAL = 2.0  # seconds between checking the zones file for edits
+
+
+def load_zones(path: str) -> dict:
+    return (
+        z.load_config(path)
+        if os.path.exists(path)
+        else {"anchor": "bottom_center", "zones": []}
+    )
+
 
 def open_source(src: str) -> cv2.VideoCapture:
     cap = cv2.VideoCapture(int(src) if src.isdigit() else src)
+    cap.set(
+        cv2.CAP_PROP_BUFFERSIZE, 1
+    )  # always the newest frame, never a growing backlog
     if not cap.isOpened():
         raise SystemExit(f"could not open source {src!r}")
     return cap
 
 
+def reconnect(src: str) -> cv2.VideoCapture:
+    """Keep retrying rather than exiting: a dropped camera/RTSP link should recover on
+    its own once the network comes back, not take the whole worker down with it."""
+    while True:
+        try:
+            return open_source(src)
+        except SystemExit:
+            print(f"reconnect to {src!r} failed, retrying in {RECONNECT_DELAY:.0f}s")
+            time.sleep(RECONNECT_DELAY)
+
+
 def run(args: argparse.Namespace) -> None:
-    cfg = (
-        z.load_config(args.zones)
-        if os.path.exists(args.zones)
-        else {"anchor": "bottom_center", "zones": []}
-    )
+    cfg = load_zones(args.zones)
+    zones_mtime = os.path.getmtime(args.zones) if os.path.exists(args.zones) else None
     anchor = args.anchor or cfg["anchor"]
     det = Detector(args.model, args.imgsz, args.device)
     cap = open_source(args.source)
     client = httpx.Client()
-    polys, size, last_post, last_frame = None, None, 0.0, 0.0
+    polys, size, last_post, last_frame, last_zones_check = None, None, 0.0, 0.0, 0.0
 
     while True:
         ok, frame = cap.read()
         if not ok:
-            break
+            print(f"lost {args.source!r}, reconnecting in {RECONNECT_DELAY:.0f}s")
+            cap.release()
+            time.sleep(RECONNECT_DELAY)
+            cap = reconnect(args.source)
+            size = (
+                None  # re-derive zone polygons in case resolution changed on reconnect
+            )
+            continue
+
+        now = time.monotonic()
+        if now - last_zones_check >= ZONES_RELOAD_INTERVAL:
+            last_zones_check = now
+            mtime = os.path.getmtime(args.zones) if os.path.exists(args.zones) else None
+            if mtime != zones_mtime:
+                try:
+                    cfg = load_zones(args.zones)
+                    anchor = args.anchor or cfg["anchor"]
+                    size = None  # re-derive pixel polygons against the new zones
+                    print(f"reloaded {args.zones!r} ({len(cfg['zones'])} zone(s))")
+                except ValueError as e:
+                    print(f"ignoring invalid {args.zones!r}: {e}")
+                zones_mtime = mtime
+
         h, w = frame.shape[:2]
         if (w, h) != size:  # read real frame size, never hardcode it
             size, polys = (w, h), z.to_pixels(cfg, w, h)
@@ -50,7 +100,6 @@ def run(args: argparse.Namespace) -> None:
         zi = z.assign(boxes, polys, anchor)
         n = z.counts(zi, len(polys))
 
-        now = time.monotonic()
         if now - last_post >= args.post_interval:
             counts = {zone["id"]: int(k) for zone, k in zip(cfg["zones"], n)}
             if args.dry_run:
@@ -67,10 +116,27 @@ def run(args: argparse.Namespace) -> None:
             ok_enc, jpeg = cv2.imencode(
                 ".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, args.jpeg_quality]
             )
-            if ok_enc and not args.dry_run:
-                post_frame(
-                    client, args.api_base, args.api_key, args.camera_id, jpeg.tobytes()
-                )
+            ok_raw, raw_jpeg = cv2.imencode(
+                ".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, args.jpeg_quality]
+            )
+            if not args.dry_run:
+                if ok_enc:
+                    post_frame(
+                        client,
+                        args.api_base,
+                        args.api_key,
+                        args.camera_id,
+                        jpeg.tobytes(),
+                    )
+                if ok_raw:
+                    post_frame(
+                        client,
+                        args.api_base,
+                        args.api_key,
+                        args.camera_id,
+                        raw_jpeg.tobytes(),
+                        raw=True,
+                    )
             last_frame = now
 
     cap.release()

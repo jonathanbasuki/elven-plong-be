@@ -1,34 +1,14 @@
-"""Zone config: load/save, normalized-polygon -> pixel conversion, box-to-zone assignment.
+"""Zone pixel math: normalized-polygon -> pixel conversion, box-to-zone assignment.
 
-Ported from plong-model/counter.py. JSON schema is unchanged (version, anchor, zones[{id,
-name, polygon}], polygon points normalized 0..1) so existing zones.json files work as-is,
-and the flat {id, name, polygon} shape maps directly onto a future zones DB table.
+Ported from plong-model/counter.py. Schema I/O (load/save/validate) lives in
+plong_elven.common.zones, which has no cv2/numpy dependency; re-exported below so
+existing call sites (z.load_config, z.ANCHORS, ...) are unaffected.
 """
-
-import json
 
 import cv2
 import numpy as np
 
-ANCHORS = ("bottom_center", "center", "top_center")
-
-
-def load_config(path: str) -> dict:
-    with open(path) as f:
-        cfg = json.load(f)
-    if cfg.get("anchor") not in ANCHORS:
-        raise ValueError(f"anchor must be one of {ANCHORS}, got {cfg.get('anchor')!r}")
-    for z in cfg["zones"]:
-        if len(z["polygon"]) < 3 or not all(
-            0 <= v <= 1 for p in z["polygon"] for v in p
-        ):
-            raise ValueError(f"zone {z['id']}: need >= 3 points, all within 0..1")
-    return cfg
-
-
-def save_config(path: str, zones: list[dict], anchor: str = "bottom_center") -> None:
-    with open(path, "w") as f:
-        json.dump({"version": 1, "anchor": anchor, "zones": zones}, f, indent=2)
+from plong_elven.common.zones import ANCHORS, load_config, save_config  # noqa: F401
 
 
 def to_pixels(cfg: dict, w: int, h: int) -> list[np.ndarray]:

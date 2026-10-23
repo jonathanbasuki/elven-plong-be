@@ -22,6 +22,9 @@ secrets/
 *.key
 infra/mediamtx.yml
 
+# per-deployment zone layout (camera-specific, not code)
+zones.json
+
 # artefak besar / data
 models/*
 !models/MODELS.md

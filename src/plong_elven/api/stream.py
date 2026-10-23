@@ -1,20 +1,24 @@
-"""Ingests the latest annotated JPEG frame per camera from the cctv worker and re-serves it
-as an MJPEG stream to any number of viewers. In-memory only, single-process assumption.
+"""Ingests JPEG frames from the cctv worker and re-serves them to any number of viewers.
+Two separate stores: annotated frames (zone outlines/boxes/labels burned in, for the live
+MJPEG stream) and raw frames (plain camera view, for the zone editor's 'capture frame'
+step — drawing new zones on top of old boxes/labels would be confusing). In-memory only,
+single-process assumption.
 
-# ponytail: one global dict, no pub/sub. Fine for one API process; swap for Redis if this
+# ponytail: two global dicts, no pub/sub. Fine for one API process; swap for Redis if this
 # ever runs behind multiple uvicorn workers.
 """
 
 import asyncio
 from collections.abc import AsyncIterator
 
-from fastapi import APIRouter, Header, HTTPException, Query, Request
+from fastapi import APIRouter, Header, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 
 from plong_elven.api.security import check_internal_key
 
 router = APIRouter(tags=["stream"])
-_frames: dict[str, bytes] = {}
+_frames: dict[str, bytes] = {}  # annotated, for the live stream
+_raw_frames: dict[str, bytes] = {}  # unannotated, for the zone editor's capture step
 BOUNDARY = b"frame"
 STREAM_INTERVAL = 0.2  # seconds between re-sent frames to each viewer
 
@@ -28,6 +32,31 @@ async def post_frame(
     check_internal_key(x_internal_api_key)
     _frames[camera_id] = await request.body()
     return {"status": "ok"}
+
+
+@router.post("/frames/{camera_id}/raw")
+async def post_raw_frame(
+    camera_id: str,
+    request: Request,
+    x_internal_api_key: str | None = Header(default=None),
+) -> dict:
+    check_internal_key(x_internal_api_key)
+    _raw_frames[camera_id] = await request.body()
+    return {"status": "ok"}
+
+
+@router.get("/frames/{camera_id}/latest")
+async def get_latest_frame(
+    camera_id: str, key: str | None = Query(default=None)
+) -> Response:
+    """The latest unannotated frame, for the zone editor's 'capture frame' step (vs. the
+    live, annotated multipart stream below)."""
+    check_internal_key(key)
+    if camera_id not in _raw_frames:
+        raise HTTPException(
+            status_code=404, detail=f"no frames received yet for {camera_id!r}"
+        )
+    return Response(content=_raw_frames[camera_id], media_type="image/jpeg")
 
 
 @router.get("/stream/{camera_id}")

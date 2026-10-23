@@ -14,9 +14,10 @@ sync-all:  ; uv sync --group api --group cctv --no-dev
 db-up:       ; $(COMPOSE) up -d db
 db-down:     ; $(COMPOSE) down
 
-api:         ; uv run uvicorn plong_elven.api.main:app --host 0.0.0.0 --port 8080 --reload
+# `uv run` does not read .env on its own; --env-file makes INTERNAL_API_KEY/ZONES_PATH/etc.
+# actually reach the process (without it, the auth check always sees an unset key).
+api:         ; uv run --env-file .env uvicorn plong_elven.api.main:app --host 0.0.0.0 --port 8080 --reload
 
-# `uv run` does not read .env on its own; --env-file makes CAMERA_ID/RTSP_URL/etc. available.
 cctv:        ; uv run --env-file .env python -m plong_elven.cctv $(ARGS)
 
 # Downloads YOLO weights into models/ via Ultralytics' own fetch (models/*.pt is gitignored).

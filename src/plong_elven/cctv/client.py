@@ -28,11 +28,19 @@ def post_counts(
 
 
 def post_frame(
-    client: httpx.Client, base_url: str, api_key: str, camera_id: str, jpeg: bytes
+    client: httpx.Client,
+    base_url: str,
+    api_key: str,
+    camera_id: str,
+    jpeg: bytes,
+    raw: bool = False,
 ) -> None:
+    """raw=True posts the plain camera frame (no overlay) used for the zone editor's
+    'capture frame' step; raw=False posts the annotated frame used for the live stream."""
+    path = f"/frames/{camera_id}/raw" if raw else f"/frames/{camera_id}"
     try:
         client.post(
-            f"{base_url}/frames/{camera_id}",
+            f"{base_url}{path}",
             content=jpeg,
             headers={"X-Internal-Api-Key": api_key, "Content-Type": "image/jpeg"},
             timeout=2.0,

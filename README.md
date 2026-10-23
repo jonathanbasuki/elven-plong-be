@@ -20,7 +20,8 @@ Plong-Elven/
 │   ├── cctv/                # Camera -> YOLO -> zone-count detection worker
 │   └── __init__.py          # Package entry point
 ├── tests/                   # Automated tests
-├── zones.example.json       # Example zone-polygon config for the cctv worker
+├── zones.example.json       # Template zone-polygon config, committed
+├── zones.json               # Your real, per-deployment zones; gitignored
 ├── .env.example             # Local configuration template without real secrets
 ├── .gitignore               # Files excluded from Git
 ├── .pre-commit-config.yaml  # Pre-commit linting and secret scanning hooks
@@ -32,8 +33,12 @@ Plong-Elven/
 Database models, migrations, and the notification service will be added as
 implementation continues. The API currently exposes `GET /healthz`,
 `POST /detections` + `WS /ws/counts` (count ingestion and live broadcast),
-and `POST /frames/{camera_id}` + `GET /stream/{camera_id}` (annotated-frame
-ingestion and an MJPEG live view) — no persistence on either path yet.
+`POST /frames/{camera_id}` + `POST /frames/{camera_id}/raw` + `GET /frames/{camera_id}/latest`
++ `GET /stream/{camera_id}` (annotated-frame ingestion for the live view, raw-frame
+ingestion for the zone editor, a raw still snapshot, and the MJPEG live stream),
+`GET`/`PUT /zones/{camera_id}` (read/write the shared zone config), and
+`GET /ui/{camera_id}` (a small browser page combining all of the above) —
+no persistence on any of these paths yet.
 
 ## Requirements
 
@@ -179,21 +184,34 @@ Download the YOLO weights once (goes to `models/`, which is gitignored):
 make models
 ```
 
+Copy the zone template once, to the file the worker and API both read by
+default (gitignored — it's your real deployment's zone layout, not code):
+
+```bash
+cp zones.example.json zones.json
+```
+
 With the API running (step 6), start the worker in a separate terminal:
 
 ```bash
-make cctv ARGS="--zones zones.example.json --dry-run"
+make cctv ARGS="--dry-run"
 ```
 
 This reads `RTSP_URL` straight from `.env` as the camera source (`make cctv`
 uses `uv run --env-file .env`, since plain `uv run` does not load `.env` on
-its own). Pass a camera index or video file instead by giving `ARGS` a
-positional source, e.g. `ARGS="0 --zones zones.example.json"`.
+its own), and `zones.json` by default (`--zones` to point elsewhere). Pass a
+camera index or video file instead of the RTSP source by giving `ARGS` a
+positional source, e.g. `ARGS="0"`.
 
 `--dry-run` prints counts instead of posting them — drop it once the API is
 running and you want counts to actually reach `POST /detections`. Draw real
-zone polygons for your camera using the `draw_zones.py` tool from the
-`plong-model` project, which shares the same `zones.json` schema.
+zone polygons for your camera either with the in-browser editor (step 9
+below) or the `draw_zones.py` tool from the `plong-model` project, which
+shares the same schema:
+
+```bash
+python draw_zones.py <source> --zones "/path/to/elven-plong-be/zones.json"
+```
 
 The worker also posts an annotated JPEG every `--frame-interval` seconds
 (default 0.2s) to `POST /frames/{camera_id}`, so anyone connected to the API
@@ -208,6 +226,34 @@ http://127.0.0.1:8080/stream/cam1
 stream URL if `INTERNAL_API_KEY` is set (a browser `<img>` tag can't send a
 custom header, so the key is a query param there instead, unlike every other
 endpoint).
+
+### 9. Draw zones from the browser
+
+With the API and worker both running, open:
+
+```text
+http://127.0.0.1:8080/ui/cam1
+```
+
+(append `?key=...` if `INTERNAL_API_KEY` is set). This page has two tabs:
+
+- **Live Feed** — the MJPEG stream plus live per-zone counts (via `WS /ws/counts`).
+- **Edit Zones** — click **Capture frame** to grab the worker's latest JPEG
+  (`GET /frames/{camera_id}/latest`), click to place polygon points on it,
+  **Finish zone** (≥3 points) to close a shape, **Undo**, and **Save** to
+  write the result to `ZONES_PATH` (default `zones.json`) via
+  `PUT /zones/{camera_id}`. Existing zones load automatically on open.
+
+The `cctv` worker checks `zones.json` for changes every 2 seconds and
+reloads it automatically (an invalid save is logged and ignored, keeping
+the last good config) — no restart needed after saving from the editor.
+
+This replaces needing to run `plong-model`'s `draw_zones.py` separately —
+same schema, same file, just in-browser. `ZONES_PATH` in `.env` controls
+which file both this editor and the `cctv` worker's `--zones` flag read —
+leave it unset to use the shared default (`zones.json`) both already agree
+on, or set it explicitly if you want a non-default path; keep them in sync
+either way.
 
 ## Development roles
 
