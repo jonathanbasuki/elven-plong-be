@@ -37,8 +37,9 @@ dev = [
     "pytest-asyncio>=1.4.0",
     "ruff>=0.17.1",
 ]
-worker = [
+cctv = [
     "httpx>=0.28.1",
+    "numpy>=2.3",
     "opencv-python>=5.0.0.93",
     "supervision>=0.31.1",
     "ultralytics>=8.4.183",
