@@ -1,6 +1,6 @@
 COMPOSE = docker compose --env-file .env -f infra/docker-compose.yml
 
-.PHONY: bootstrap sync-api sync-cctv sync-all db-up db-down db-migrate db-revision api cctv models lint test doctor
+.PHONY: bootstrap sync-api sync-cctv sync-all db-up db-down db-migrate db-revision api cctv models benchmark-cctv lint test doctor
 
 bootstrap:
 	@test -f .env || cp .env.example .env
@@ -21,6 +21,7 @@ db-revision: ; uv run --env-file .env alembic revision --autogenerate -m "$(mess
 api:         ; uv run --env-file .env uvicorn plong_elven.api.main:app --host 127.0.0.1 --port 8080 --reload
 
 cctv:        ; uv run --env-file .env python -m plong_elven.cctv $(ARGS)
+benchmark-cctv: ; uv run --env-file .env python scripts/benchmark_cctv.py $(ARGS)
 
 # Downloads YOLO weights into models/ via Ultralytics' own fetch (models/*.pt is gitignored).
 models:
