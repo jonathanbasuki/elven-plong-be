@@ -161,6 +161,24 @@ Role authorization is intentionally out of scope for this first migration, but
 `role_id` is included so the login response and future authorization checks do
 not require a schema change.
 
+## Later addition: dispatch fields on `users`
+
+A later migration (`f9fe68ec2955_merge_staff_into_users`) added two columns
+used by the dispatch/broadcast flow directly to `users`, rather than keeping
+a separate `staff` table:
+
+```sql
+ALTER TABLE users ADD COLUMN status TEXT NOT NULL DEFAULT 'idle';
+ALTER TABLE users ADD COLUMN push_token TEXT;
+ALTER TABLE users ADD CONSTRAINT users_status_check
+    CHECK (status IN ('idle', 'delegating'));
+```
+
+A `floor_staff` user *is* staff for dispatch purposes — there is no separate
+staff identity or id. `broadcast_responses.staff_id` references `users.id`.
+This removed an earlier standalone `staff` table that duplicated the same
+people with a second primary key.
+
 ## Not included yet
 
 Do not add these tables to the first migration unless the endpoint contract is

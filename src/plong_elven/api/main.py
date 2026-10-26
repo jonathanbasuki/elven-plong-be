@@ -1,10 +1,13 @@
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Request
+from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from plong_elven.api.auth import router as auth_router
 from plong_elven.api.detections import router as detections_router
+from plong_elven.api.dispatch import DispatchError
+from plong_elven.api.dispatch import router as dispatch_router
 from plong_elven.api.stream import router as stream_router
 from plong_elven.api.ui import router as ui_router
 from plong_elven.api.zones import router as zones_router
@@ -13,9 +16,18 @@ from plong_elven.db.session import get_db
 app = FastAPI(title="Plong Elven API", version="0.1.0")
 app.include_router(auth_router)
 app.include_router(detections_router)
+app.include_router(dispatch_router)
 app.include_router(stream_router)
 app.include_router(zones_router)
 app.include_router(ui_router)
+
+
+@app.exception_handler(DispatchError)
+async def dispatch_error_handler(_request: Request, exc: DispatchError) -> JSONResponse:
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"error": {"code": exc.code, "message": exc.message}},
+    )
 
 
 @app.get("/healthz", tags=["system"])

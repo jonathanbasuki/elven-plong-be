@@ -12,12 +12,12 @@ import os
 import time
 
 import cv2
-import httpx
 
 from . import zones as z
 from .client import post_counts, post_frame
 from .detector import Detector
 from .overlay import draw
+from .uploader import LatestUploader
 
 # Without this, OpenCV's RTSP (FFmpeg) backend has no read timeout: on a stall (e.g. a
 # flaky Wi-Fi link), cap.read() blocks forever instead of failing so the loop can recover.
@@ -64,83 +64,90 @@ def run(args: argparse.Namespace) -> None:
     anchor = args.anchor or cfg["anchor"]
     det = Detector(args.model, args.imgsz, args.device)
     cap = open_source(args.source)
-    client = httpx.Client()
+    counts_uploader = LatestUploader(
+        lambda client, item: post_counts(
+            client, args.api_base, args.api_key, item[0], item[1]
+        )
+    )
+    annotated_uploader = LatestUploader(
+        lambda client, item: post_frame(
+            client, args.api_base, args.api_key, item[0], item[1]
+        )
+    )
+    raw_uploader = LatestUploader(
+        lambda client, item: post_frame(
+            client, args.api_base, args.api_key, item[0], item[1], raw=True
+        )
+    )
+    counts_uploader.start()
+    annotated_uploader.start()
+    raw_uploader.start()
     polys, size, last_post, last_frame, last_zones_check = None, None, 0.0, 0.0, 0.0
 
-    while True:
-        ok, frame = cap.read()
-        if not ok:
-            print(f"lost {args.source!r}, reconnecting in {RECONNECT_DELAY:.0f}s")
-            cap.release()
-            time.sleep(RECONNECT_DELAY)
-            cap = reconnect(args.source)
-            size = (
-                None  # re-derive zone polygons in case resolution changed on reconnect
-            )
-            continue
+    try:
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                print(f"lost {args.source!r}, reconnecting in {RECONNECT_DELAY:.0f}s")
+                cap.release()
+                time.sleep(RECONNECT_DELAY)
+                cap = reconnect(args.source)
+                size = None  # re-derive polygons if resolution changes on reconnect
+                continue
 
-        now = time.monotonic()
-        if now - last_zones_check >= ZONES_RELOAD_INTERVAL:
-            last_zones_check = now
-            mtime = os.path.getmtime(args.zones) if os.path.exists(args.zones) else None
-            if mtime != zones_mtime:
-                try:
-                    cfg = load_zones(args.zones)
-                    anchor = args.anchor or cfg["anchor"]
-                    size = None  # re-derive pixel polygons against the new zones
-                    print(f"reloaded {args.zones!r} ({len(cfg['zones'])} zone(s))")
-                except ValueError as e:
-                    print(f"ignoring invalid {args.zones!r}: {e}")
-                zones_mtime = mtime
+            now = time.monotonic()
+            if now - last_zones_check >= ZONES_RELOAD_INTERVAL:
+                last_zones_check = now
+                mtime = (
+                    os.path.getmtime(args.zones) if os.path.exists(args.zones) else None
+                )
+                if mtime != zones_mtime:
+                    try:
+                        cfg = load_zones(args.zones)
+                        anchor = args.anchor or cfg["anchor"]
+                        size = None  # re-derive polygons against the new zones
+                        print(f"reloaded {args.zones!r} ({len(cfg['zones'])} zone(s))")
+                    except ValueError as e:
+                        print(f"ignoring invalid {args.zones!r}: {e}")
+                    zones_mtime = mtime
 
-        h, w = frame.shape[:2]
-        if (w, h) != size:  # read real frame size, never hardcode it
-            size, polys = (w, h), z.to_pixels(cfg, w, h)
-        boxes, _, _ms = det(frame, args.conf)
-        zi = z.assign(boxes, polys, anchor)
-        n = z.counts(zi, len(polys))
+            h, w = frame.shape[:2]
+            if (w, h) != size:  # read real frame size, never hardcode it
+                size, polys = (w, h), z.to_pixels(cfg, w, h)
+            boxes, _, _ms = det(frame, args.conf)
+            zi = z.assign(boxes, polys, anchor)
+            n = z.counts(zi, len(polys))
 
-        if now - last_post >= args.post_interval:
-            counts = {zone["id"]: int(k) for zone, k in zip(cfg["zones"], n)}
-            if args.dry_run:
-                print(counts)
-            else:
-                post_counts(client, args.api_base, args.api_key, args.camera_id, counts)
-            last_post = now
+            if now - last_post >= args.post_interval:
+                counts = {zone["id"]: int(k) for zone, k in zip(cfg["zones"], n)}
+                if args.dry_run:
+                    print(counts)
+                else:
+                    counts_uploader.submit((args.camera_id, counts))
+                last_post = now
 
-        if not args.no_stream and now - last_frame >= args.frame_interval:
-            labels = [f"{zone['name']}: {k}" for zone, k in zip(cfg["zones"], n)]
-            annotated = draw(
-                frame.copy(), boxes, zi, polys, labels, [f"total: {len(boxes)}"]
-            )
-            ok_enc, jpeg = cv2.imencode(
-                ".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, args.jpeg_quality]
-            )
-            ok_raw, raw_jpeg = cv2.imencode(
-                ".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, args.jpeg_quality]
-            )
-            if not args.dry_run:
-                if ok_enc:
-                    post_frame(
-                        client,
-                        args.api_base,
-                        args.api_key,
-                        args.camera_id,
-                        jpeg.tobytes(),
-                    )
-                if ok_raw:
-                    post_frame(
-                        client,
-                        args.api_base,
-                        args.api_key,
-                        args.camera_id,
-                        raw_jpeg.tobytes(),
-                        raw=True,
-                    )
-            last_frame = now
-
-    cap.release()
-    client.close()
+            if not args.no_stream and now - last_frame >= args.frame_interval:
+                labels = [f"{zone['name']}: {k}" for zone, k in zip(cfg["zones"], n)]
+                annotated = draw(
+                    frame.copy(), boxes, zi, polys, labels, [f"total: {len(boxes)}"]
+                )
+                ok_enc, jpeg = cv2.imencode(
+                    ".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, args.jpeg_quality]
+                )
+                ok_raw, raw_jpeg = cv2.imencode(
+                    ".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, args.jpeg_quality]
+                )
+                if not args.dry_run:
+                    if ok_enc:
+                        annotated_uploader.submit((args.camera_id, jpeg.tobytes()))
+                    if ok_raw:
+                        raw_uploader.submit((args.camera_id, raw_jpeg.tobytes()))
+                last_frame = now
+    finally:
+        cap.release()
+        counts_uploader.close()
+        annotated_uploader.close()
+        raw_uploader.close()
 
 
 def main() -> None:
