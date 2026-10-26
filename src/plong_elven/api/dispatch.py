@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from plong_elven.api.apns import send_push
 from plong_elven.api.auth import get_current_user
 from plong_elven.api.detections import latest_counts
+from plong_elven.common.zone_status import classify
 from plong_elven.db.models import Broadcast, BroadcastResponse, Role, User, Zone
 from plong_elven.db.session import get_db
 
@@ -93,12 +94,7 @@ async def _broadcast_response(session: AsyncSession, broadcast: Broadcast) -> di
 
 def _zone_payload(zone: Zone) -> dict:
     current_count = latest_counts.get(zone.zone_id, 0)
-    if current_count < zone.warning_threshold:
-        status = "safe"
-    elif current_count < zone.crowded_threshold:
-        status = "warning"
-    else:
-        status = "crowded"
+    status = classify(current_count, zone.warning_threshold, zone.crowded_threshold)
     return {
         "zoneId": zone.zone_id,
         "name": zone.name,
