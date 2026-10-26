@@ -4,15 +4,17 @@ from uuid import UUID, uuid4
 from sqlalchemy import (
     CHAR,
     Boolean,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     SmallInteger,
     String,
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import INET
+from sqlalchemy.dialects.postgresql import INET, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from plong_elven.db.base import Base
@@ -88,3 +90,111 @@ class RefreshToken(Base):
     ip_address: Mapped[str | None] = mapped_column(INET)
 
     user: Mapped[User] = relationship(back_populates="refresh_tokens")
+
+
+class Zone(Base):
+    __tablename__ = "zones"
+    __table_args__ = (
+        CheckConstraint("warning_threshold > 0", name="zones_warning_threshold_check"),
+        CheckConstraint(
+            "crowded_threshold > warning_threshold",
+            name="zones_crowded_threshold_check",
+        ),
+    )
+
+    zone_id: Mapped[str] = mapped_column(String, primary_key=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    map_image_url: Mapped[str] = mapped_column(String, nullable=False)
+    polygon: Mapped[list[list[float]]] = mapped_column(JSONB, nullable=False)
+    warning_threshold: Mapped[int] = mapped_column(Integer, nullable=False)
+    crowded_threshold: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    broadcasts: Mapped[list["Broadcast"]] = relationship(back_populates="zone")
+
+
+class Staff(Base):
+    __tablename__ = "staff"
+    __table_args__ = (
+        CheckConstraint("status IN ('idle', 'delegating')", name="staff_status_check"),
+    )
+
+    staff_id: Mapped[UUID] = mapped_column(
+        primary_key=True, default=uuid4, server_default=text("gen_random_uuid()")
+    )
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String, nullable=False, default="idle", server_default="idle"
+    )
+    push_token: Mapped[str | None] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    responses: Mapped[list["BroadcastResponse"]] = relationship(back_populates="staff")
+
+
+class Broadcast(Base):
+    __tablename__ = "broadcasts"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('open', 'closed', 'finished')", name="broadcast_status_check"
+        ),
+        CheckConstraint("staff_needed > 0", name="broadcast_staff_needed_check"),
+        Index(
+            "one_open_broadcast_per_zone",
+            "zone_id",
+            unique=True,
+            postgresql_where=text("status = 'open'"),
+        ),
+    )
+
+    broadcast_id: Mapped[UUID] = mapped_column(
+        primary_key=True, default=uuid4, server_default=text("gen_random_uuid()")
+    )
+    zone_id: Mapped[str] = mapped_column(
+        String, ForeignKey("zones.zone_id"), nullable=False
+    )
+    staff_needed: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String, nullable=False, default="open", server_default="open"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    zone: Mapped[Zone] = relationship(back_populates="broadcasts")
+    responses: Mapped[list["BroadcastResponse"]] = relationship(
+        back_populates="broadcast", cascade="all, delete-orphan"
+    )
+
+
+class BroadcastResponse(Base):
+    __tablename__ = "broadcast_responses"
+    __table_args__ = (
+        CheckConstraint(
+            "completed_at IS NULL OR completed_at >= responded_at",
+            name="broadcast_response_completed_check",
+        ),
+        Index("idx_broadcast_responses_broadcast", "broadcast_id"),
+    )
+
+    broadcast_id: Mapped[UUID] = mapped_column(
+        ForeignKey("broadcasts.broadcast_id"), primary_key=True
+    )
+    staff_id: Mapped[UUID] = mapped_column(
+        ForeignKey("staff.staff_id"), primary_key=True
+    )
+    responded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    broadcast: Mapped[Broadcast] = relationship(back_populates="responses")
+    staff: Mapped[Staff] = relationship(back_populates="responses")
