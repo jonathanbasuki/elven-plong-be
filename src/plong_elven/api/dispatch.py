@@ -1,15 +1,16 @@
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from plong_elven.api.apns import send_push
 from plong_elven.api.auth import get_current_user
 from plong_elven.api.detections import latest_counts
-from plong_elven.db.models import Broadcast, BroadcastResponse, User, Zone
+from plong_elven.db.models import Broadcast, BroadcastResponse, Role, User, Zone
 from plong_elven.db.session import get_db
 
 router = APIRouter(prefix="/api/v1/dispatch", tags=["dispatch"])
@@ -167,6 +168,7 @@ async def get_staff(
 @router.post("/broadcasts", status_code=201)
 async def create_broadcast(
     payload: CreateBroadcastRequest,
+    background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_db),  # noqa: B008
     user: User = Depends(get_current_user),  # noqa: B008
 ) -> dict:
@@ -205,6 +207,19 @@ async def create_broadcast(
             409, "broadcast_open", "This zone already has an open broadcast."
         ) from None
     await session.refresh(broadcast)
+
+    staff_tokens = await session.scalars(
+        select(User.push_token)
+        .join(Role, Role.id == User.role_id)
+        .where(Role.name == "floor_staff", User.push_token.is_not(None))
+    )
+    background_tasks.add_task(
+        send_push,
+        list(staff_tokens.all()),
+        "New broadcast",
+        f"Crowd control needed in {zone.name} — tap to accept",
+    )
+
     return await _broadcast_response(session, broadcast)
 
 
