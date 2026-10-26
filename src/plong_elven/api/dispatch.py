@@ -90,17 +90,8 @@ async def _broadcast_response(session: AsyncSession, broadcast: Broadcast) -> di
     }
 
 
-@router.get("/zones/{zoneId}")
-async def get_dispatch_zone(
-    zoneId: str,
-    session: AsyncSession = Depends(get_db),  # noqa: B008
-    _user: User = Depends(get_current_user),  # noqa: B008
-) -> dict:
-    zone = await session.get(Zone, zoneId)
-    if zone is None:
-        raise _not_found(f"zone {zoneId} not found")
-
-    current_count = latest_counts.get(zoneId, 0)
+def _zone_payload(zone: Zone) -> dict:
+    current_count = latest_counts.get(zone.zone_id, 0)
     if current_count < zone.warning_threshold:
         status = "safe"
     elif current_count < zone.crowded_threshold:
@@ -115,6 +106,29 @@ async def get_dispatch_zone(
         "mapImageUrl": zone.map_image_url,
         "polygon": zone.polygon,
     }
+
+
+@router.get("/zones")
+async def list_dispatch_zones(
+    session: AsyncSession = Depends(get_db),  # noqa: B008
+    _user: User = Depends(get_current_user),  # noqa: B008
+) -> list[dict]:
+    """Lets the client discover real zone ids instead of hardcoding one — this is a
+    single-zone POC, so the app just uses whichever zone comes back first."""
+    zones = await session.scalars(select(Zone).order_by(Zone.zone_id))
+    return [_zone_payload(zone) for zone in zones.all()]
+
+
+@router.get("/zones/{zoneId}")
+async def get_dispatch_zone(
+    zoneId: str,
+    session: AsyncSession = Depends(get_db),  # noqa: B008
+    _user: User = Depends(get_current_user),  # noqa: B008
+) -> dict:
+    zone = await session.get(Zone, zoneId)
+    if zone is None:
+        raise _not_found(f"zone {zoneId} not found")
+    return _zone_payload(zone)
 
 
 @router.get("/broadcasts/current")

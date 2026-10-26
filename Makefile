@@ -18,10 +18,10 @@ db-revision: ; uv run --env-file .env alembic revision --autogenerate -m "$(mess
 
 # `uv run` does not read .env on its own; --env-file makes INTERNAL_API_KEY/ZONES_PATH/etc.
 # actually reach the process (without it, the auth check always sees an unset key).
-api:         ; uv run --env-file .env uvicorn plong_elven.api.main:app --host 127.0.0.1 --port 8080 --reload
+api:         ; uv run --env-file .env uvicorn plong_elven.api.main:app --host 0.0.0.0 --port 8080 --reload
 
 cctv:        ; uv run --env-file .env python -m plong_elven.cctv $(ARGS)
-cctv-relay:  ; uv run --env-file .env python -m plong_elven.cctv rtsp://127.0.0.1:8554/cam1 --camera-id default --zones zones.example.json --frame-interval 0.2 --jpeg-quality 80
+cctv-relay:  ; uv run --env-file .env python -m plong_elven.cctv rtsp://127.0.0.1:8554/cam1 --camera-id default --zones zones.json --frame-interval 0.2 --jpeg-quality 80
 benchmark-cctv: ; uv run --env-file .env python scripts/benchmark_cctv.py $(ARGS)
 
 # Downloads YOLO weights into models/ via Ultralytics' own fetch (models/*.pt is gitignored).
