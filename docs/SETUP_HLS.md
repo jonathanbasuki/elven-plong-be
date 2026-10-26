@@ -57,6 +57,21 @@ This generates the ignored `infra/mediamtx.yml` from `RTSP_URL` in `.env`, then
 starts MediaMTX in the foreground. Keep this terminal open. Press `Ctrl+C` to
 stop MediaMTX.
 
+The generated config sets `hlsVariant: mpegts` (classic segmented HLS). This
+is required for AVPlayer on iOS: MediaMTX's default low-latency fMP4 HLS mode
+can drift its part duration on a jittery camera feed, which AVPlayer does not
+report as an error — it just shows a black view indefinitely. MPEG-TS HLS has
+no parts and does not hit this, at the cost of a couple extra seconds of
+latency.
+
+**Only one RTSP client can read the camera at a time.** If you also run
+`make cctv` (which connects straight to `RTSP_URL`, i.e. the camera) while
+MediaMTX is running, the two will fight over the camera's single RTSP slot —
+MediaMTX's logs will show the stream repeatedly going "available" then `EOF`
+every few seconds, and HLS will never stabilize. Use `make cctv-relay`
+instead (step 7 below); it reads from MediaMTX's own relay
+(`rtsp://127.0.0.1:8554/cam1`), so only MediaMTX ever talks to the camera.
+
 The local endpoints are:
 
 ```text
@@ -117,6 +132,12 @@ ask the user for permission to access the Mac on the LAN. Because this local
 HLS URL uses HTTP, App Transport Security may require an appropriate development
 exception. Avoid broad insecure-load exceptions in production; use HTTPS for a
 deployed service.
+
+The Plong app plays this feed through `AVPlayerViewController` with
+`showsPlaybackControls = false` (see `CCTVPreview`/`LivePlayerView` in
+`ContentView.swift`) rather than SwiftUI's `VideoPlayer`, which always shows a
+pause/scrub bar. This keeps the preview always live — a manager can't pause it
+and mistake a frozen frame for the current state.
 
 ## 7. Run the API and CCTV worker
 

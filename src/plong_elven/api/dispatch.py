@@ -7,11 +7,17 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from plong_elven.api.auth import get_current_user
 from plong_elven.api.detections import latest_counts
-from plong_elven.db.models import Broadcast, BroadcastResponse, Staff, Zone
+from plong_elven.db.models import Broadcast, BroadcastResponse, User, Zone
 from plong_elven.db.session import get_db
 
 router = APIRouter(prefix="/api/v1/dispatch", tags=["dispatch"])
+
+
+def _require_role(user: User, role: str) -> None:
+    if user.role.name != role:
+        raise DispatchError(403, "wrong_role", f"This action requires the {role} role.")
 
 
 class DispatchError(Exception):
@@ -24,10 +30,6 @@ class DispatchError(Exception):
 class CreateBroadcastRequest(BaseModel):
     zoneId: str
     staffNeeded: int = Field(gt=0)
-
-
-class StaffRequest(BaseModel):
-    staffId: UUID
 
 
 def _not_found(message: str) -> DispatchError:
@@ -63,18 +65,18 @@ async def _broadcast_response(session: AsyncSession, broadcast: Broadcast) -> di
         )
     )
     accepted_staff_result = await session.execute(
-        select(BroadcastResponse, Staff)
-        .join(Staff, Staff.staff_id == BroadcastResponse.staff_id)
+        select(BroadcastResponse, User)
+        .join(User, User.id == BroadcastResponse.staff_id)
         .where(BroadcastResponse.broadcast_id == broadcast.broadcast_id)
         .order_by(BroadcastResponse.responded_at)
     )
     accepted_staff = [
         {
             "staffId": str(response.staff_id),
-            "name": staff.name,
+            "name": user.full_name,
             "completedAt": response.completed_at,
         }
-        for response, staff in accepted_staff_result.all()
+        for response, user in accepted_staff_result.all()
     ]
     return {
         "broadcastId": str(broadcast.broadcast_id),
@@ -92,6 +94,7 @@ async def _broadcast_response(session: AsyncSession, broadcast: Broadcast) -> di
 async def get_dispatch_zone(
     zoneId: str,
     session: AsyncSession = Depends(get_db),  # noqa: B008
+    _user: User = Depends(get_current_user),  # noqa: B008
 ) -> dict:
     zone = await session.get(Zone, zoneId)
     if zone is None:
@@ -118,6 +121,7 @@ async def get_dispatch_zone(
 async def get_current_broadcast(
     zoneId: str = Query(...),
     session: AsyncSession = Depends(get_db),  # noqa: B008
+    _user: User = Depends(get_current_user),  # noqa: B008
 ) -> dict:
     broadcasts = await session.scalars(
         select(Broadcast)
@@ -138,18 +142,21 @@ async def get_current_broadcast(
 async def get_staff(
     staffId: UUID,
     session: AsyncSession = Depends(get_db),  # noqa: B008
+    _user: User = Depends(get_current_user),  # noqa: B008
 ) -> dict:
-    staff = await session.get(Staff, staffId)
+    staff = await session.get(User, staffId)
     if staff is None:
         raise _not_found(f"staff {staffId} not found")
-    return {"staffId": str(staff.staff_id), "name": staff.name, "status": staff.status}
+    return {"staffId": str(staff.id), "name": staff.full_name, "status": staff.status}
 
 
 @router.post("/broadcasts", status_code=201)
 async def create_broadcast(
     payload: CreateBroadcastRequest,
     session: AsyncSession = Depends(get_db),  # noqa: B008
+    user: User = Depends(get_current_user),  # noqa: B008
 ) -> dict:
+    _require_role(user, "ops_manager")
     zone = await session.get(Zone, payload.zoneId)
     if zone is None:
         raise _not_found(f"zone {payload.zoneId} not found")
@@ -190,23 +197,21 @@ async def create_broadcast(
 @router.post("/broadcasts/{broadcastId}/respond")
 async def respond_to_broadcast(
     broadcastId: UUID,
-    payload: StaffRequest,
     session: AsyncSession = Depends(get_db),  # noqa: B008
+    user: User = Depends(get_current_user),  # noqa: B008
 ) -> dict[str, str]:
+    _require_role(user, "floor_staff")
     broadcast = await _find_broadcast(session, broadcastId)
     if await _close_if_expired(broadcast, datetime.now(UTC)):
         await session.commit()
         raise DispatchError(409, "expired", "This broadcast has expired.")
-    staff = await session.get(Staff, payload.staffId)
-    if staff is None:
-        raise _not_found(f"staff {payload.staffId} not found")
 
     existing = await session.get(
-        BroadcastResponse, {"broadcast_id": broadcastId, "staff_id": payload.staffId}
+        BroadcastResponse, {"broadcast_id": broadcastId, "staff_id": user.id}
     )
     if existing is not None:
         return {"status": "ok"}
-    if staff.status == "delegating":
+    if user.status == "delegating":
         raise DispatchError(
             409, "already_delegating", "Staff member is already delegating."
         )
@@ -222,8 +227,8 @@ async def respond_to_broadcast(
             "This broadcast already has enough staff.",
         )
 
-    session.add(BroadcastResponse(broadcast_id=broadcastId, staff_id=payload.staffId))
-    staff.status = "delegating"
+    session.add(BroadcastResponse(broadcast_id=broadcastId, staff_id=user.id))
+    user.status = "delegating"
     await session.commit()
     return {"status": "ok"}
 
@@ -231,15 +236,12 @@ async def respond_to_broadcast(
 @router.post("/broadcasts/{broadcastId}/complete")
 async def complete_broadcast(
     broadcastId: UUID,
-    payload: StaffRequest,
     session: AsyncSession = Depends(get_db),  # noqa: B008
+    user: User = Depends(get_current_user),  # noqa: B008
 ) -> dict[str, str]:
     await _find_broadcast(session, broadcastId)
-    staff = await session.get(Staff, payload.staffId)
-    if staff is None:
-        raise _not_found(f"staff {payload.staffId} not found")
     response = await session.get(
-        BroadcastResponse, {"broadcast_id": broadcastId, "staff_id": payload.staffId}
+        BroadcastResponse, {"broadcast_id": broadcastId, "staff_id": user.id}
     )
     if response is None:
         raise DispatchError(
@@ -249,7 +251,7 @@ async def complete_broadcast(
         )
     if response.completed_at is None:
         response.completed_at = datetime.now(UTC)
-    staff.status = "idle"
+    user.status = "idle"
     await session.commit()
     return {"status": "ok"}
 
@@ -258,7 +260,9 @@ async def complete_broadcast(
 async def finish_broadcast(
     broadcastId: UUID,
     session: AsyncSession = Depends(get_db),  # noqa: B008
+    user: User = Depends(get_current_user),  # noqa: B008
 ) -> dict:
+    _require_role(user, "ops_manager")
     broadcast = await _find_broadcast(session, broadcastId)
     if await _close_if_expired(broadcast, datetime.now(UTC)):
         await session.commit()

@@ -37,6 +37,7 @@ class User(Base):
     __table_args__ = (
         Index("uq_users_email_lower", text("lower(email)"), unique=True),
         Index("ix_users_role_id", "role_id"),
+        CheckConstraint("status IN ('idle', 'delegating')", name="users_status_check"),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -55,10 +56,19 @@ class User(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Dispatch fields (this is also "staff" for the delegation workflow): a
+    # floor_staff user's own id is what POST /broadcasts/{id}/respond etc. use.
+    status: Mapped[str] = mapped_column(
+        String, nullable=False, default="idle", server_default="idle"
+    )
+    push_token: Mapped[str | None] = mapped_column(String)
 
     role: Mapped[Role] = relationship(back_populates="users")
     refresh_tokens: Mapped[list["RefreshToken"]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
+    )
+    broadcast_responses: Mapped[list["BroadcastResponse"]] = relationship(
+        back_populates="staff"
     )
 
 
@@ -115,27 +125,6 @@ class Zone(Base):
     broadcasts: Mapped[list["Broadcast"]] = relationship(back_populates="zone")
 
 
-class Staff(Base):
-    __tablename__ = "staff"
-    __table_args__ = (
-        CheckConstraint("status IN ('idle', 'delegating')", name="staff_status_check"),
-    )
-
-    staff_id: Mapped[UUID] = mapped_column(
-        primary_key=True, default=uuid4, server_default=text("gen_random_uuid()")
-    )
-    name: Mapped[str] = mapped_column(String, nullable=False)
-    status: Mapped[str] = mapped_column(
-        String, nullable=False, default="idle", server_default="idle"
-    )
-    push_token: Mapped[str | None] = mapped_column(String)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
-    )
-
-    responses: Mapped[list["BroadcastResponse"]] = relationship(back_populates="staff")
-
-
 class Broadcast(Base):
     __tablename__ = "broadcasts"
     __table_args__ = (
@@ -188,13 +177,11 @@ class BroadcastResponse(Base):
     broadcast_id: Mapped[UUID] = mapped_column(
         ForeignKey("broadcasts.broadcast_id"), primary_key=True
     )
-    staff_id: Mapped[UUID] = mapped_column(
-        ForeignKey("staff.staff_id"), primary_key=True
-    )
+    staff_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), primary_key=True)
     responded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     broadcast: Mapped[Broadcast] = relationship(back_populates="responses")
-    staff: Mapped[Staff] = relationship(back_populates="responses")
+    staff: Mapped[User] = relationship(back_populates="broadcast_responses")

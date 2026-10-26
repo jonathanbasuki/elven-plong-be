@@ -19,7 +19,11 @@ floor_staff
 ops_manager
 ```
 
-Role-protected business endpoints are not implemented yet.
+The dispatch endpoints under `/api/v1/dispatch/*` now require a valid access
+token, and the broadcast-creation and finish endpoints additionally require
+the `ops_manager` role (`POST /broadcasts/{id}/respond` requires
+`floor_staff`). A request with no token gets `401`; a token with the wrong
+role gets `403` with `error.code = "wrong_role"`.
 
 ## 1. Configure local authentication
 
@@ -134,6 +138,14 @@ uv run --env-file .env python scripts/create_user.py \
   --email staff@example.com \
   --full-name "Floor Staff" \
   --role floor_staff
+```
+
+For local dispatch testing, `scripts/seed_dispatch.py` seeds one manager and
+three floor-staff users (plus a zone) in one shot, all sharing the password
+`password123`:
+
+```bash
+uv run --env-file .env python scripts/seed_dispatch.py
 ```
 
 Verify the users and roles directly in PostgreSQL:

@@ -37,7 +37,11 @@ def main() -> None:
 
     output = ROOT / "infra" / "mediamtx.yml"
     output.write_text(
-        f"paths:\n  cam1:\n    source: {json.dumps(rtsp_url)}\n",
+        # hlsVariant mpegts: MediaMTX's default low-latency fMP4 HLS drifts part
+        # duration on a jittery camera feed, which AVPlayer silently stalls on
+        # (no error, just a black view). Classic MPEG-TS HLS has no parts and
+        # just works, at the cost of a couple extra seconds of latency.
+        f"hlsVariant: mpegts\npaths:\n  cam1:\n    source: {json.dumps(rtsp_url)}\n",
         encoding="utf-8",
     )
     os.chmod(output, 0o600)
