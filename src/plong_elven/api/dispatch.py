@@ -11,7 +11,14 @@ from plong_elven.api.apns import send_push
 from plong_elven.api.auth import get_current_user
 from plong_elven.api.detections import latest_counts
 from plong_elven.common.zone_status import classify
-from plong_elven.db.models import Broadcast, BroadcastResponse, Role, User, Zone
+from plong_elven.db.models import (
+    Broadcast,
+    BroadcastResponse,
+    Role,
+    User,
+    Zone,
+    ZoneCountHistory,
+)
 from plong_elven.db.session import get_db
 
 router = APIRouter(prefix="/api/v1/dispatch", tags=["dispatch"])
@@ -126,6 +133,31 @@ async def get_dispatch_zone(
     if zone is None:
         raise _not_found(f"zone {zoneId} not found")
     return _zone_payload(zone)
+
+
+@router.get("/zones/{zoneId}/history")
+async def get_zone_history(
+    zoneId: str,
+    limit: int = Query(12, gt=0, le=288),
+    session: AsyncSession = Depends(get_db),  # noqa: B008
+    _user: User = Depends(get_current_user),  # noqa: B008
+) -> list[dict]:
+    """Most recent 5-minute avg/peak buckets first. Default limit (12) is the last
+    hour; max (288) is the last 24 hours."""
+    rows = await session.scalars(
+        select(ZoneCountHistory)
+        .where(ZoneCountHistory.zone_id == zoneId)
+        .order_by(ZoneCountHistory.bucket_start.desc())
+        .limit(limit)
+    )
+    return [
+        {
+            "bucketStart": row.bucket_start,
+            "avgCount": row.avg_count,
+            "peakCount": row.peak_count,
+        }
+        for row in rows.all()
+    ]
 
 
 @router.get("/broadcasts/current")
