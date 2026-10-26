@@ -43,6 +43,7 @@ _PAGE = """<!doctype html>
   <nav>
     <button id="tab-live-btn" class="active">Live Feed</button>
     <button id="tab-edit-btn">Edit Zones</button>
+    <button id="tab-dev-btn">Dev Tools</button>
   </nav>
 </header>
 <main>
@@ -70,6 +71,21 @@ _PAGE = """<!doctype html>
     <ul id="zone-list"></ul>
     <div id="status"></div>
   </section>
+
+  <section id="tab-dev" class="tab">
+    <p>Manually set a zone's detected crowd count, exactly as the cctv worker would via
+    <code>POST /detections</code> — lets you drive the frontend's Safe/Warning/Crowded
+    states without needing real people in frame.</p>
+    <p style="color:#fb3">If the cctv worker is running at the same time, it will overwrite
+    this within ~1s (it posts a real count every second). Stop the worker first to keep a
+    manual value in place.</p>
+    <div class="row">
+      <select id="dev-zone"></select>
+      <input id="dev-count" type="number" min="0" value="0" style="width:80px">
+      <button id="dev-set">Set count</button>
+    </div>
+    <div id="dev-status"></div>
+  </section>
 </main>
 <script>
 const CAMERA_ID = "__CAMERA_ID__";
@@ -80,13 +96,14 @@ const authHeaders = KEY ? {"X-Internal-Api-Key": KEY} : {};
 document.getElementById("stream").src = `/stream/${CAMERA_ID}${qs}`;
 
 // --- tabs ---
-const tabs = {live: document.getElementById("tab-live"), edit: document.getElementById("tab-edit")};
-const tabBtns = {live: document.getElementById("tab-live-btn"), edit: document.getElementById("tab-edit-btn")};
+const tabs = {live: document.getElementById("tab-live"), edit: document.getElementById("tab-edit"), dev: document.getElementById("tab-dev")};
+const tabBtns = {live: document.getElementById("tab-live-btn"), edit: document.getElementById("tab-edit-btn"), dev: document.getElementById("tab-dev-btn")};
 function showTab(name) {
   for (const k in tabs) { tabs[k].classList.toggle("active", k === name); tabBtns[k].classList.toggle("active", k === name); }
 }
 tabBtns.live.onclick = () => showTab("live");
 tabBtns.edit.onclick = () => showTab("edit");
+tabBtns.dev.onclick = () => showTab("dev");
 
 // --- live counts via websocket ---
 let zoneNames = {};
@@ -110,7 +127,14 @@ const ctx = overlay.getContext("2d");
 const status = document.getElementById("status");
 const colors = ["#e33", "#39f", "#3b7", "#fb3", "#b3f", "#3bf"];
 
-function syncZoneNames() { zoneNames = {}; zones.forEach(z => zoneNames[z.id] = z.name); }
+function syncZoneNames() { zoneNames = {}; zones.forEach(z => zoneNames[z.id] = z.name); renderDevZones(); }
+
+function renderDevZones() {
+  const sel = document.getElementById("dev-zone");
+  const prev = sel.value;
+  sel.innerHTML = zones.map(z => `<option value="${z.id}">${z.id} (${z.name})</option>`).join("");
+  if (zones.some(z => z.id === prev)) sel.value = prev;
+}
 
 function redraw() {
   if (!snapshot.naturalWidth) return;
@@ -199,6 +223,20 @@ document.getElementById("save").onclick = async () => {
   });
   const body = await resp.json();
   status.textContent = resp.ok ? `saved ${body.zones} zone(s)` : `save failed: ${body.detail || resp.status}`;
+};
+
+document.getElementById("dev-set").onclick = async () => {
+  const devStatus = document.getElementById("dev-status");
+  const zoneId = document.getElementById("dev-zone").value;
+  const count = parseInt(document.getElementById("dev-count").value, 10) || 0;
+  if (!zoneId) { devStatus.textContent = "no zones loaded yet"; return; }
+  devStatus.textContent = "setting...";
+  const resp = await fetch("/detections", {
+    method: "POST",
+    headers: {"Content-Type": "application/json", ...authHeaders},
+    body: JSON.stringify({camera_id: CAMERA_ID, counts: {[zoneId]: count}}),
+  });
+  devStatus.textContent = resp.ok ? `${zoneId} set to ${count}` : `failed: ${resp.status}`;
 };
 
 (async () => {
