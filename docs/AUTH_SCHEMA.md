@@ -179,6 +179,10 @@ staff identity or id. `broadcast_responses.staff_id` references `users.id`.
 This removed an earlier standalone `staff` table that duplicated the same
 people with a second primary key.
 
+`push_token` is written by `POST /api/v1/auth/push-token` and read by the
+push-notification sender for both roles — see
+[PUSH_NOTIFICATIONS.md](PUSH_NOTIFICATIONS.md).
+
 ## Not included yet
 
 Do not add these tables to the first migration unless the endpoint contract is

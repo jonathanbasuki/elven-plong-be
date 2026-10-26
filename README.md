@@ -1,10 +1,17 @@
 # Plong Elven - Backend
 
-Backend for the crowd-detection system. The current baseline includes the
-Python environment, a process health endpoint, the `cctv` detection worker,
-an in-memory detection-ingestion + WebSocket broadcast endpoint, and a local
-PostgreSQL service. Persistence (migrations, a zones table, aggregated
-stats) and app notifications are not implemented yet.
+Backend for a crowd-detection and staff-dispatch system. A `cctv` worker reads
+a camera feed, runs YOLO person-detection per zone, and posts counts to this
+FastAPI service. The service persists users/auth, zones, crowd-dispatch
+broadcasts, and 5-minute crowd history in PostgreSQL; pushes real APNs
+notifications to staff and managers; and serves a live HLS camera relay
+(via MediaMTX) plus a small in-browser zone-editor/dev-tools page.
+
+```text
+Camera --RTSP--> MediaMTX --RTSP--> cctv worker --YOLO--> POST /detections --> Postgres
+                    |                                           |
+                    +--HLS--> iPhone app                        +--> APNs push (staff/managers)
+```
 
 ## Repository structure
 
@@ -12,12 +19,14 @@ stats) and app notifications are not implemented yet.
 Plong-Elven/
 ├── .github/workflows/       # GitHub Actions for linting and tests
 ├── docs/                    # Technical documentation and API contracts
-├── infra/                   # Local infrastructure, currently PostgreSQL Compose
+├── infra/                   # Local infrastructure: PostgreSQL Compose, generated MediaMTX config
 ├── models/                  # Model weights; model files are not committed
-├── scripts/                 # Manual utilities such as doctor.py
+├── scripts/                 # Manual utilities: doctor, create_user, seed_dispatch, mediamtx config gen
+├── secrets/                 # APNs .p8 auth key; gitignored
 ├── src/plong_elven/         # Main Python application source code
-│   ├── api/                 # FastAPI app and HTTP/WebSocket endpoints
+│   ├── api/                 # FastAPI app: auth, dispatch, detections ingestion, cctv frames/stream, APNs, zone-editor UI
 │   ├── cctv/                # Camera -> YOLO -> zone-count detection worker
+│   ├── common/               # Shared settings and zone-status classification
 │   └── __init__.py          # Package entry point
 ├── tests/                   # Automated tests
 ├── zones.example.json       # Template zone-polygon config, committed
@@ -30,35 +39,36 @@ Plong-Elven/
 └── uv.lock                  # Reproducible dependency lockfile
 ```
 
-Database models, migrations, and the notification service will be added as
-implementation continues. The API currently exposes `GET /healthz`,
-`POST /detections` + `WS /ws/counts` (count ingestion and live broadcast),
-`POST /frames/{camera_id}` + `POST /frames/{camera_id}/raw` + `GET /frames/{camera_id}/latest`
-+ `GET /stream/{camera_id}` (annotated-frame ingestion for the live view, raw-frame
-ingestion for the zone editor, a raw still snapshot, and the MJPEG live stream),
-`GET`/`PUT /zones/{camera_id}` (read/write the shared zone config), and
-`GET /ui/{camera_id}` (a small browser page combining all of the above) —
-no persistence on any of these paths yet.
+## What's implemented
+
+| Area | Endpoints | Docs |
+|---|---|---|
+| Health/readiness | `GET /healthz`, `GET /readyz` | — |
+| Auth (JWT + refresh tokens, roles) | `POST/GET /api/v1/auth/*` | [docs/SETUP_AUTH.md](docs/SETUP_AUTH.md), [docs/AUTH_SCHEMA.md](docs/AUTH_SCHEMA.md) |
+| Crowd dispatch (zones, broadcasts, status, 5-min history) | `/api/v1/dispatch/*` | [docs/DISPATCH_API.md](docs/DISPATCH_API.md) |
+| CCTV ingestion + live annotated stream | `POST /detections`, `WS /ws/counts`, `/frames/{camera_id}*`, `GET /stream/{camera_id}` | [docs/SETUP_CCTV.md](docs/SETUP_CCTV.md) |
+| In-browser live view / zone editor / dev tools | `GET /ui/{camera_id}`, `GET`/`PUT /zones/{camera_id}` | [docs/SETUP_CCTV.md](docs/SETUP_CCTV.md) |
+| Push notifications (APNs) | fired internally on broadcast creation and crowd-status change | [docs/PUSH_NOTIFICATIONS.md](docs/PUSH_NOTIFICATIONS.md) |
+| Live HLS camera relay (MediaMTX) | external process, not an API route | [docs/SETUP_HLS.md](docs/SETUP_HLS.md) |
+
+All endpoints except `/healthz`, `/readyz`, and `POST /api/v1/auth/login` require
+either a bearer access token (dispatch/auth endpoints) or `X-Internal-Api-Key`
+(cctv-worker-facing endpoints: `/detections`, `/frames/*`).
 
 ## Requirements
 
 - macOS on Apple Silicon or another platform supported by Python 3.12
 - `uv`
-- Docker with Compose support (only needed for PostgreSQL)
+- Docker with Compose support (for PostgreSQL and MediaMTX)
+- An Apple Developer account with an APNs Auth Key — only if you want real
+  push notifications; everything else works without it
 
 ## Project Setup
 
-Follow these steps after receiving repository access.
+Follow these steps after receiving repository access. Steps 1–7 get the API
+and database running; steps 8+ are optional add-ons (live camera, push).
 
 ### 1. Install prerequisites
-
-Install the following tools:
-
-- Git
-- `uv`
-- Docker with Compose support, such as Docker Desktop or OrbStack
-
-On macOS with Homebrew:
 
 ```bash
 brew install git uv
@@ -69,35 +79,33 @@ Make sure Docker or OrbStack is running before starting the database.
 
 ### 2. Clone the repository
 
-Using SSH:
-
 ```bash
 git clone git@github.com:jonathanbasuki/elven-plong-be.git
-```
-
-Or using HTTPS:
-
-```bash
-git clone https://github.com/jonathanbasuki/elven-plong-be.git
-```
-
-Then enter the project directory:
-
-```bash
 cd elven-plong-be
 ```
 
 ### 3. Create local configuration
 
-Copy the example configuration. This creates a local `.env` file that is
-ignored by Git:
-
 ```bash
 cp .env.example .env
 ```
 
-For the current health-check setup, the default values are sufficient. Do not
-commit `.env`, camera credentials, APNs keys, or other secrets.
+At minimum, set a strong `JWT_SECRET` (the API refuses to start auth-protected
+routes without one, shorter than 32 characters):
+
+```bash
+openssl rand -hex 32
+```
+
+```env
+JWT_SECRET=<generated-value>
+POSTGRES_PASSWORD=<pick-a-local-password>
+DATABASE_URL=postgresql+asyncpg://plong_elven:<same-password>@127.0.0.1:5432/plong_elven
+```
+
+Leave `INTERNAL_API_KEY`, `RTSP_URL`, and the `APNS_*` values empty for now —
+they're only needed for the CCTV worker, HLS relay, and push notifications
+respectively (steps 8–10). Never commit `.env`.
 
 ### 4. Install dependencies and Git hooks
 
@@ -105,155 +113,113 @@ commit `.env`, camera credentials, APNs keys, or other secrets.
 make bootstrap
 ```
 
-This creates the virtual environment through `uv`, installs the API, cctv,
-and development dependency groups, and installs the pre-commit hooks.
+Creates the virtual environment through `uv`, installs the `api` and `cctv`
+dependency groups plus dev tools, and installs the pre-commit hooks. The
+`cctv` group includes OpenCV/Ultralytics and can take longer.
 
-The `cctv` dependency group includes computer-vision packages (OpenCV,
-Ultralytics) and can take longer to install.
-
-### 5. Validate the local setup
+### 5. Start PostgreSQL and run migrations
 
 ```bash
-make doctor
-make lint
-make test
-uv lock --check
-uv run pre-commit run --all-files
+make db-up
+make db-migrate
 ```
 
-Expected results:
+Verify:
 
-- `make doctor` prints the Python version and machine architecture.
-- `make lint` reports that all Ruff checks passed.
-- `make test` reports at least one passing test.
-- `uv lock --check` completes without changing `uv.lock`.
-- Pre-commit completes without reporting a secret or formatting error.
+```bash
+docker compose --env-file .env -f infra/docker-compose.yml ps
+uv run --env-file .env alembic current   # should print the latest revision, suffixed "(head)"
+```
 
-### 6. Run the API
+### 6. Seed local users and a zone
 
-Start the API in the first terminal:
+```bash
+uv run --env-file .env python scripts/seed_dispatch.py
+```
+
+Creates one zone (`z2`, from `zones.example.json`/`zones.json`) and four users
+— one `ops_manager`, three `floor_staff` — all sharing the password
+`password123`. See [docs/SETUP_AUTH.md](docs/SETUP_AUTH.md) to create users
+individually instead.
+
+### 7. Run the API
 
 ```bash
 make api
 ```
 
-Keep that terminal running. In a second terminal, check the health endpoint:
-
 ```bash
 curl -i http://127.0.0.1:8080/healthz
 # {"status":"ok"}
+curl -i http://127.0.0.1:8080/readyz
+# {"status":"ready","database":"connected"}
 ```
 
-Open the interactive API documentation at:
+Interactive API docs: `http://127.0.0.1:8080/docs`. At this point auth and
+dispatch are fully usable — see [docs/SETUP_AUTH.md](docs/SETUP_AUTH.md) and
+[docs/DISPATCH_API.md](docs/DISPATCH_API.md) for the full request/response
+walkthrough. Stop the API with `Ctrl+C`.
 
-```text
-http://127.0.0.1:8080/docs
-```
+### 8. (Optional) Run a live camera through the cctv worker
 
-The API is working when the health request returns HTTP `200` and the JSON
-body is `{"status":"ok"}`. Stop the API with `Ctrl+C`.
-
-### 7. Start the local database when needed
-
-Make sure Docker or OrbStack is running, then execute:
-
-```bash
-make db-up
-docker compose --env-file .env -f infra/docker-compose.yml ps
-```
-
-The database container should be running or healthy. Validate the Compose
-configuration with:
-
-```bash
-docker compose --env-file .env -f infra/docker-compose.yml config --quiet
-```
-
-Database migrations and application database access have not been added yet.
-Stop the local database when it is no longer needed:
-
-```bash
-make db-down
-```
-
-### 8. Run the cctv worker
-
-Download the YOLO weights once (goes to `models/`, which is gitignored):
+Download YOLO weights once:
 
 ```bash
 make models
 ```
 
-Copy the zone template once, to the file the worker and API both read by
-default (gitignored — it's your real deployment's zone layout, not code):
+Copy the zone template once (gitignored — it's your real deployment's zone
+layout, not code):
 
 ```bash
 cp zones.example.json zones.json
 ```
 
-With the API running (step 6), start the worker in a separate terminal:
+Point a webcam, video file, or RTSP camera at the worker:
 
 ```bash
-make cctv ARGS="--dry-run"
+make cctv ARGS="0 --dry-run"   # webcam, prints counts instead of posting
 ```
 
-This reads `RTSP_URL` straight from `.env` as the camera source (`make cctv`
-uses `uv run --env-file .env`, since plain `uv run` does not load `.env` on
-its own), and `zones.json` by default (`--zones` to point elsewhere). Pass a
-camera index or video file instead of the RTSP source by giving `ARGS` a
-positional source, e.g. `ARGS="0"`.
+Drop `--dry-run` to actually post to `POST /detections` once the API is
+running. Full walkthrough, including RTSP setup and the annotated MJPEG
+stream: [docs/SETUP_CCTV.md](docs/SETUP_CCTV.md).
 
-`--dry-run` prints counts instead of posting them — drop it once the API is
-running and you want counts to actually reach `POST /detections`. Draw real
-zone polygons for your camera either with the in-browser editor (step 9
-below) or the `draw_zones.py` tool from the `plong-model` project, which
-shares the same schema:
+### 9. (Optional) Live HLS preview for the iOS app
+
+Needs a real RTSP camera and MediaMTX (Docker). Full walkthrough:
+[docs/SETUP_HLS.md](docs/SETUP_HLS.md). Short version:
 
 ```bash
-python draw_zones.py <source> --zones "/path/to/elven-plong-be/zones.json"
+make mediamtx      # terminal 1 — relays the camera to RTSP + HLS
+make cctv-relay     # terminal 2 — worker reads MediaMTX's relay, not the camera directly
 ```
 
-The worker also posts an annotated JPEG every `--frame-interval` seconds
-(default 0.2s) to `POST /frames/{camera_id}`, so anyone connected to the API
-can watch the feed, with zone outlines/boxes drawn in, at:
+### 10. (Optional) Real push notifications
+
+Needs an Apple Developer APNs Auth Key (`.p8`). Full walkthrough, including
+where to put the key and which `.env` values to set:
+[docs/PUSH_NOTIFICATIONS.md](docs/PUSH_NOTIFICATIONS.md).
+
+### 11. Draw zones from the browser
+
+With the API running (and the worker running, for **Capture frame**/**Dev
+Tools** to have live data), open:
 
 ```text
-http://127.0.0.1:8080/stream/cam1
+http://127.0.0.1:8080/ui/default
 ```
 
-(open directly in a browser, or embed with `<img src="...">`). Pass
-`--no-stream` to the worker to skip posting frames, and add `?key=...` to the
-stream URL if `INTERNAL_API_KEY` is set (a browser `<img>` tag can't send a
-custom header, so the key is a query param there instead, unlike every other
-endpoint).
+(append `?key=...` if `INTERNAL_API_KEY` is set). Three tabs:
 
-### 9. Draw zones from the browser
-
-With the API and worker both running, open:
-
-```text
-http://127.0.0.1:8080/ui/cam1
-```
-
-(append `?key=...` if `INTERNAL_API_KEY` is set). This page has two tabs:
-
-- **Live Feed** — the MJPEG stream plus live per-zone counts (via `WS /ws/counts`).
-- **Edit Zones** — click **Capture frame** to grab the worker's latest JPEG
-  (`GET /frames/{camera_id}/latest`), click to place polygon points on it,
-  **Finish zone** (≥3 points) to close a shape, **Undo**, and **Save** to
-  write the result to `ZONES_PATH` (default `zones.json`) via
-  `PUT /zones/{camera_id}`. Existing zones load automatically on open.
-
-The `cctv` worker checks `zones.json` for changes every 2 seconds and
-reloads it automatically (an invalid save is logged and ignored, keeping
-the last good config) — no restart needed after saving from the editor.
-
-This replaces needing to run `plong-model`'s `draw_zones.py` separately —
-same schema, same file, just in-browser. `ZONES_PATH` in `.env` controls
-which file both this editor and the `cctv` worker's `--zones` flag read —
-leave it unset to use the shared default (`zones.json`) both already agree
-on, or set it explicitly if you want a non-default path; keep them in sync
-either way.
+- **Live Feed** — the MJPEG stream plus live per-zone counts.
+- **Edit Zones** — capture a frame, click to draw a zone polygon, save to
+  `zones.json` via `PUT /zones/{camera_id}`. The worker reloads it
+  automatically within 2 seconds, no restart needed.
+- **Dev Tools** — manually POST a count to `/detections` for a zone, to drive
+  the app's Safe/Warning/Crowded states and test push alerts without needing
+  real people in frame. Stop the cctv worker first, or it'll overwrite your
+  manual value within ~1 second.
 
 ## Development roles
 

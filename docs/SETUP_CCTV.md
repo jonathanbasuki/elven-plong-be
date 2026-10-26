@@ -13,6 +13,16 @@ The worker reads frames, runs the detection model, draws the annotations, and
 posts the resulting JPEG frames to the API. The API serves those frames through
 `GET /stream/{camera_id}`.
 
+This guide runs the worker with raw `uv run` commands to show every flag
+explicitly. Day to day, prefer the Makefile shortcuts instead:
+`make cctv ARGS="..."` (same flags, positional source first) for a webcam/file,
+or `make cctv-relay` for an RTSP camera behind MediaMTX — see
+[SETUP_HLS.md](SETUP_HLS.md), which also covers the important gotcha that only
+one RTSP client can read the camera at a time. To draw real zone polygons
+instead of using the flat `zones.example.json` template below, use the
+in-browser editor at `GET /ui/{camera_id}` — see the main
+[README](../README.md), step 11.
+
 ## Requirements
 
 - Git access to the repository
