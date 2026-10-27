@@ -233,17 +233,22 @@ async def refresh(
     )
 
 
-@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
+@router.post("/logout")
 async def logout(
     payload: RefreshRequest,
     session: AsyncSession = Depends(get_db),  # noqa: B008
-):
+) -> dict[str, str]:
     result = await session.execute(
-        select(RefreshToken).where(
-            RefreshToken.token_hash == _hash_refresh_token(payload.refresh_token)
-        )
+        select(RefreshToken)
+        .options(selectinload(RefreshToken.user))
+        .where(RefreshToken.token_hash == _hash_refresh_token(payload.refresh_token))
     )
     stored = result.scalar_one_or_none()
     if stored is not None and stored.revoked_at is None:
         stored.revoked_at = datetime.now(UTC)
+        # Otherwise this device keeps receiving pushes for this account after the
+        # user signs out — the token was never tied to "logged in", so nothing else
+        # cleared it. Re-registered automatically on next login.
+        stored.user.push_token = None
         await session.commit()
+    return {"status": "ok"}

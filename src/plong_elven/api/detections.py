@@ -4,7 +4,7 @@ latest_counts itself is in-memory only; history rows are persisted.
 """
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from fastapi import (
     APIRouter,
@@ -30,6 +30,7 @@ _clients: set[WebSocket] = set()
 latest_counts: dict[str, int] = {}
 latest_count_observed_at: dict[str, datetime] = {}
 _last_status: dict[str, str] = {}
+_last_alert_sent_at: dict[tuple[str, str], datetime] = {}
 
 _ALERT_MESSAGES = {
     "warning": (
@@ -41,6 +42,14 @@ _ALERT_MESSAGES = {
         "{zone} is crowded ({count} people). Dispatch staff immediately.",
     ),
 }
+
+# A count hovering right at a threshold (e.g. 9/10/11 people) flips the classified
+# status back and forth on every detection, and each flip is a "transition" that
+# would otherwise re-fire a push — including repeatedly re-entering "crowded" with
+# a different count each time. Both statuses get the same cooldown on repeating
+# themselves; a transition to a *different* status (e.g. warning -> crowded) is
+# never throttled, so an escalation always still fires instantly.
+_ALERT_COOLDOWNS = {"warning": timedelta(minutes=5), "crowded": timedelta(minutes=5)}
 
 BUCKET_SECONDS = 300  # 5 minutes
 
@@ -123,6 +132,13 @@ async def _process_zone_update(session: AsyncSession, counts: dict[str, int]) ->
         _last_status[zone_id] = status
         if status == previous or status not in _ALERT_MESSAGES:
             continue
+
+        cooldown = _ALERT_COOLDOWNS.get(status)
+        if cooldown is not None:
+            last_sent = _last_alert_sent_at.get((zone_id, status))
+            if last_sent is not None and now - last_sent < cooldown:
+                continue
+        _last_alert_sent_at[(zone_id, status)] = now
 
         manager_tokens = await session.scalars(
             select(User.push_token)
