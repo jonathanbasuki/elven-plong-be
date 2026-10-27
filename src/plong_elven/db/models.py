@@ -6,11 +6,13 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
     SmallInteger,
     String,
+    UniqueConstraint,
     func,
     text,
 )
@@ -123,6 +125,34 @@ class Zone(Base):
     )
 
     broadcasts: Mapped[list["Broadcast"]] = relationship(back_populates="zone")
+
+
+class ZoneCountHistory(Base):
+    """One row per zone per 5-minute window: avg/peak of the detected-person counts
+    the cctv worker posted during that window. Written by detections.py as windows
+    roll over, not by any endpoint directly."""
+
+    __tablename__ = "zone_count_history"
+    __table_args__ = (
+        UniqueConstraint(
+            "zone_id", "bucket_start", name="uq_zone_count_history_zone_bucket"
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        primary_key=True, default=uuid4, server_default=text("gen_random_uuid()")
+    )
+    zone_id: Mapped[str] = mapped_column(
+        String, ForeignKey("zones.zone_id"), nullable=False
+    )
+    bucket_start: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    avg_count: Mapped[float] = mapped_column(Float, nullable=False)
+    peak_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
 
 class Broadcast(Base):

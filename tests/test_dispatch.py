@@ -10,6 +10,11 @@ from plong_elven.db.models import Role, User, Zone
 from plong_elven.db.session import get_db
 
 
+class _EmptyScalars:
+    def all(self):
+        return []
+
+
 class FakeSession:
     async def get(self, model, key):
         if model is Zone and key == "z1":
@@ -22,6 +27,9 @@ class FakeSession:
                 crowded_threshold=10,
             )
         return None
+
+    async def scalars(self, stmt):
+        return _EmptyScalars()
 
 
 async def fake_db() -> AsyncIterator[FakeSession]:

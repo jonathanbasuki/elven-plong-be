@@ -31,6 +31,10 @@ class RefreshRequest(BaseModel):
     refresh_token: str = Field(min_length=1)
 
 
+class PushTokenRequest(BaseModel):
+    pushToken: str = Field(min_length=1)
+
+
 class UserResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -184,6 +188,17 @@ async def login(
 @router.get("/profile", response_model=UserResponse)
 async def profile(user: User = Depends(get_current_user)):  # noqa: B008
     return _user_response(user)
+
+
+@router.post("/push-token")
+async def register_push_token(
+    payload: PushTokenRequest,
+    user: User = Depends(get_current_user),  # noqa: B008
+    session: AsyncSession = Depends(get_db),  # noqa: B008
+) -> dict[str, str]:
+    user.push_token = payload.pushToken
+    await session.commit()
+    return {"status": "ok"}
 
 
 @router.post("/refresh", response_model=RefreshResponse)

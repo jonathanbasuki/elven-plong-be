@@ -1,15 +1,24 @@
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from plong_elven.api.apns import send_push
 from plong_elven.api.auth import get_current_user
 from plong_elven.api.detections import latest_counts
-from plong_elven.db.models import Broadcast, BroadcastResponse, User, Zone
+from plong_elven.common.zone_status import classify
+from plong_elven.db.models import (
+    Broadcast,
+    BroadcastResponse,
+    Role,
+    User,
+    Zone,
+    ZoneCountHistory,
+)
 from plong_elven.db.session import get_db
 
 router = APIRouter(prefix="/api/v1/dispatch", tags=["dispatch"])
@@ -90,6 +99,30 @@ async def _broadcast_response(session: AsyncSession, broadcast: Broadcast) -> di
     }
 
 
+def _zone_payload(zone: Zone) -> dict:
+    current_count = latest_counts.get(zone.zone_id, 0)
+    status = classify(current_count, zone.warning_threshold, zone.crowded_threshold)
+    return {
+        "zoneId": zone.zone_id,
+        "name": zone.name,
+        "currentCount": current_count,
+        "status": status,
+        "mapImageUrl": zone.map_image_url,
+        "polygon": zone.polygon,
+    }
+
+
+@router.get("/zones")
+async def list_dispatch_zones(
+    session: AsyncSession = Depends(get_db),  # noqa: B008
+    _user: User = Depends(get_current_user),  # noqa: B008
+) -> list[dict]:
+    """Lets the client discover real zone ids instead of hardcoding one — this is a
+    single-zone POC, so the app just uses whichever zone comes back first."""
+    zones = await session.scalars(select(Zone).order_by(Zone.zone_id))
+    return [_zone_payload(zone) for zone in zones.all()]
+
+
 @router.get("/zones/{zoneId}")
 async def get_dispatch_zone(
     zoneId: str,
@@ -99,22 +132,32 @@ async def get_dispatch_zone(
     zone = await session.get(Zone, zoneId)
     if zone is None:
         raise _not_found(f"zone {zoneId} not found")
+    return _zone_payload(zone)
 
-    current_count = latest_counts.get(zoneId, 0)
-    if current_count < zone.warning_threshold:
-        status = "safe"
-    elif current_count < zone.crowded_threshold:
-        status = "warning"
-    else:
-        status = "crowded"
-    return {
-        "zoneId": zone.zone_id,
-        "name": zone.name,
-        "currentCount": current_count,
-        "status": status,
-        "mapImageUrl": zone.map_image_url,
-        "polygon": zone.polygon,
-    }
+
+@router.get("/zones/{zoneId}/history")
+async def get_zone_history(
+    zoneId: str,
+    limit: int = Query(12, gt=0, le=288),
+    session: AsyncSession = Depends(get_db),  # noqa: B008
+    _user: User = Depends(get_current_user),  # noqa: B008
+) -> list[dict]:
+    """Most recent 5-minute avg/peak buckets first. Default limit (12) is the last
+    hour; max (288) is the last 24 hours."""
+    rows = await session.scalars(
+        select(ZoneCountHistory)
+        .where(ZoneCountHistory.zone_id == zoneId)
+        .order_by(ZoneCountHistory.bucket_start.desc())
+        .limit(limit)
+    )
+    return [
+        {
+            "bucketStart": row.bucket_start,
+            "avgCount": row.avg_count,
+            "peakCount": row.peak_count,
+        }
+        for row in rows.all()
+    ]
 
 
 @router.get("/broadcasts/current")
@@ -153,6 +196,7 @@ async def get_staff(
 @router.post("/broadcasts", status_code=201)
 async def create_broadcast(
     payload: CreateBroadcastRequest,
+    background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_db),  # noqa: B008
     user: User = Depends(get_current_user),  # noqa: B008
 ) -> dict:
@@ -191,6 +235,19 @@ async def create_broadcast(
             409, "broadcast_open", "This zone already has an open broadcast."
         ) from None
     await session.refresh(broadcast)
+
+    staff_tokens = await session.scalars(
+        select(User.push_token)
+        .join(Role, Role.id == User.role_id)
+        .where(Role.name == "floor_staff", User.push_token.is_not(None))
+    )
+    background_tasks.add_task(
+        send_push,
+        list(staff_tokens.all()),
+        "New broadcast",
+        f"Crowd control needed in {zone.name} — tap to accept",
+    )
+
     return await _broadcast_response(session, broadcast)
 
 

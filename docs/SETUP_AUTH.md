@@ -10,6 +10,7 @@ POST /api/v1/auth/login
 GET  /api/v1/auth/profile
 POST /api/v1/auth/refresh
 POST /api/v1/auth/logout
+POST /api/v1/auth/push-token
 ```
 
 The current roles are:
@@ -307,7 +308,20 @@ Expected behavior:
 | `GET /api/v1/auth/profile` | Bearer access token | Reads active user and role |
 | `POST /api/v1/auth/refresh` | Refresh token in body | Revokes old token and creates a new one |
 | `POST /api/v1/auth/logout` | Refresh token in body | Revokes refresh token |
+| `POST /api/v1/auth/push-token` | Bearer access token | Stores the device's APNs token on the user row |
 | `GET /readyz` | None | Executes `SELECT 1` |
+
+### Registering a device for push notifications
+
+```bash
+curl -i -X POST http://127.0.0.1:8080/api/v1/auth/push-token \
+  -H "Authorization: Bearer <access-token>" -H "Content-Type: application/json" \
+  -d '{"pushToken": "<64-char-hex-apns-device-token>"}'
+```
+
+The frontend calls this automatically after login (see `AppDelegate` in
+`PushNotifications.swift`). The token itself is only useful once APNs is
+configured server-side — see [PUSH_NOTIFICATIONS.md](PUSH_NOTIFICATIONS.md).
 
 ## Troubleshooting
 
