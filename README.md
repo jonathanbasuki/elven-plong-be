@@ -232,20 +232,50 @@ uv sync --group api --group dev
 uv sync --group cctv --group dev
 ```
 
-Use a short-lived branch for your work:
+## Branches and sprint workflow
 
-```bash
-git checkout -b feat/your-change
+`development` holds the current work. `main` is only updated at the Friday merge,
+so a fresh clone of `main` may be behind; always start from `development`.
+
+```text
+dev/<short-topic>  --PR-->  development  --Friday merge-->  main
 ```
 
-Before opening a pull request:
+```bash
+git checkout development && git pull
+git checkout -b dev/your-change
+```
+
+Before opening a pull request (the PR template has the full checklist):
 
 ```bash
 make lint
 make test
 git status
-git push -u origin feat/your-change
+git push -u origin dev/your-change
 ```
+
+- One PR per sprint task. Code freeze is Thursday 18:00; Friday is merge, QA and review only.
+- `docs/DISPATCH_API.md` is the API contract the iOS app builds against. Change it in the same PR as the endpoint.
 
 Keep model weights, recordings, camera URLs, and APNs keys outside Git. Every
 push and pull request runs the API lint and test checks in GitHub Actions.
+
+## Quickstart for iOS developers
+
+The shortest path to a local backend the app can log in to, without a camera:
+
+```bash
+cp .env.example .env              # set JWT_SECRET (openssl rand -hex 32) and POSTGRES_PASSWORD + DATABASE_URL
+cp zones.example.json zones.json
+uv sync --group api --group dev
+make db-up && make db-migrate
+uv run --env-file .env python scripts/seed_dispatch.py
+make api                           # http://127.0.0.1:8080, docs at /docs
+```
+
+- Logins: `manager@plongelven.io` (manager) and `bunga@`, `citra@`, `dedi@plongelven.io` (staff), all `password123`.
+- Drive a zone to Crowded without people: `http://127.0.0.1:8080/ui/default` > **Dev Tools**.
+- From a physical iPhone, use your Mac's LAN IP (`ipconfig getifaddr en0`) instead of `127.0.0.1`. The API already listens on `0.0.0.0`.
+- Push needs an APNs key and `APNS_USE_SANDBOX=true` for Xcode builds: [docs/PUSH_NOTIFICATIONS.md](docs/PUSH_NOTIFICATIONS.md).
+- The FE README explains how to point the app at this backend.
