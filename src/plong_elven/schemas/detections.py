@@ -1,4 +1,4 @@
-"""Detection schemas for the worker route POST /internal/v1/cameras/{cameraId}/detections."""
+"""Detection schemas for the worker route POST /api/v1/cameras/{cameraId}/detections."""
 
 from typing import Annotated
 

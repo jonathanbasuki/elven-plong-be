@@ -1,30 +1,58 @@
-"""Dev-only camera page and manual count, under /dev/cameras/{cameraId}.
+"""Dev-only camera page and its backend, under /dev.
 
-create_app() registers this router only when APP_ENV=dev (§6.1). The page itself
-needs no login: a browser navigation cannot send a bearer header, and the login
-form is on the page (§6.5). It holds no data. Every API call the page makes needs
-an admin access token, kept in a JS variable (never localStorage). The stream
-and the WebSocket use short-lived tickets minted from POST /api/v1/tickets.
+create_app() registers this router only when APP_ENV=dev (§6.1). Nothing here
+exists in production. The page itself (/dev/cameras/{cameraId}) needs no login: a
+browser navigation cannot send a bearer header, and the login form is on the page
+(§6.5). It holds no data. Every API call the page makes needs an admin access
+token, kept in a JS variable (never localStorage):
+
+- POST /dev/cameras/{cameraId}/detections: manual counts.
+- POST /dev/tickets: 60-second tickets for the stream and the WebSocket.
+- /dev/cameras/{cameraId}/layout, /snapshot (admin token) and /stream (a
+  `stream:<cameraId>` ticket, because an <img> cannot send headers; the internal
+  key is never accepted).
+
+# ponytail: frames live in in-memory dicts and every viewer re-reads the latest
+# one. Fine for one API process; swap for Redis if this ever runs behind
+# multiple uvicorn workers.
 
 Plain HTML/JS, no build step or dependency.
 """
 
+import asyncio
 import html
 import json
+from collections.abc import AsyncIterator
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Path
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, BackgroundTasks, Depends, Path, Query, Response
+from fastapi.responses import HTMLResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from plong_elven.api.deps import get_alert_service, get_session_factory, require_role
+from plong_elven.api.deps import (
+    get_alert_service,
+    get_camera_service,
+    get_db,
+    get_session_factory,
+    require_role,
+)
 from plong_elven.api.routers.crowd import ingest_counts
 from plong_elven.db.models import User
 from plong_elven.schemas.common import CAMERA_ID_PATTERN
 from plong_elven.schemas.detections import DetectionIn
+from plong_elven.schemas.layout import ZonesIn
+from plong_elven.schemas.tickets import TicketOut, TicketRequest
 from plong_elven.services.alert_service import AlertService
+from plong_elven.services.auth_service import AuthService
+from plong_elven.services.camera_service import CameraService
+from plong_elven.services.errors import AppError
 from plong_elven.state.live_state import LiveState, get_live_state
 
-router = APIRouter(prefix="/dev/cameras/{cameraId}", tags=["dev"])
+BOUNDARY = b"frame"
+STREAM_INTERVAL = 0.2  # seconds between re-sent frames to each viewer
+
+camera_router = APIRouter(prefix="/dev/cameras/{cameraId}")
+tickets_router = APIRouter(prefix="/dev")
+router = APIRouter(tags=["dev"])  # routers are included at the bottom of this file
 
 _PAGE = """<!doctype html>
 <html>
@@ -173,7 +201,7 @@ function postJson(path, payload) {
 }
 
 async function mintTicket(scope, statusEl) {
-  const resp = await postJson("/api/v1/tickets", {scope});
+  const resp = await postJson("/dev/tickets", {scope});
   if (!resp) return null;
   if (!resp.ok) { statusEl.textContent = `ticket failed: ${await errorMessage(resp)}`; return null; }
   return (await resp.json()).ticket;
@@ -222,7 +250,7 @@ async function startStream() {
   if (!ticket) return;
   stream.onerror = () => { liveStatus.textContent = "stream unavailable (is the cctv worker running?)"; };
   stream.onload = () => { liveStatus.textContent = ""; };
-  stream.src = `/api/v1/cameras/${CAMERA_ID}/stream?ticket=${encodeURIComponent(ticket)}`;
+  stream.src = `/dev/cameras/${CAMERA_ID}/stream?ticket=${encodeURIComponent(ticket)}`;
 }
 document.getElementById("reload-stream").onclick = startStream;
 
@@ -309,7 +337,7 @@ function renderZoneList() {
 
 document.getElementById("capture").onclick = async () => {
   status.textContent = "capturing...";
-  const resp = await api(`/api/v1/cameras/${CAMERA_ID}/snapshot`);
+  const resp = await api(`/dev/cameras/${CAMERA_ID}/snapshot`);
   if (!resp) return;
   if (!resp.ok) { status.textContent = `capture failed: ${await errorMessage(resp)}`; return; }
   const blob = await resp.blob();
@@ -343,7 +371,7 @@ document.getElementById("anchor").onchange = (ev) => { anchor = ev.target.value;
 
 document.getElementById("save").onclick = async () => {
   status.textContent = "saving...";
-  const resp = await api(`/api/v1/cameras/${CAMERA_ID}/layout`, {
+  const resp = await api(`/dev/cameras/${CAMERA_ID}/layout`, {
     method: "PUT",
     headers: {"Content-Type": "application/json"},
     body: JSON.stringify({anchor, zones}),
@@ -366,7 +394,7 @@ document.getElementById("dev-set").onclick = async () => {
 };
 
 async function loadLayout() {
-  const resp = await api(`/api/v1/cameras/${CAMERA_ID}/layout`);
+  const resp = await api(`/dev/cameras/${CAMERA_ID}/layout`);
   if (!resp) return;
   if (!resp.ok) { status.textContent = `layout failed: ${await errorMessage(resp)}`; return; }
   const cfg = await resp.json();
@@ -399,13 +427,13 @@ def render_page(camera_id: str) -> str:
     return page.replace("__CAMERA_ID__", html.escape(camera_id))
 
 
-@router.get("", response_class=HTMLResponse)
+@camera_router.get("", response_class=HTMLResponse)
 async def dev_page(cameraId: str = Path(pattern=CAMERA_ID_PATTERN)) -> str:
     """The dev camera page. No login: the login form is on the page (dev only)."""
     return render_page(cameraId)
 
 
-@router.post("/detections")
+@camera_router.post("/detections")
 async def post_manual_count(
     detection: DetectionIn,
     background_tasks: BackgroundTasks,
@@ -420,3 +448,99 @@ async def post_manual_count(
         cameraId, detection.counts, background_tasks, live, factory, alerts
     )
     return {"status": "ok"}
+
+
+@tickets_router.post("/tickets", response_model=TicketOut)
+async def mint_ticket(
+    body: TicketRequest,
+    user: User = Depends(require_role("admin")),  # noqa: B008
+    session: AsyncSession = Depends(get_db),  # noqa: B008
+) -> TicketOut:
+    """Mint a short-lived ticket JWT for the dev page's stream and WebSocket.
+
+    Requires admin role. Returns a ticket valid for 60 seconds, accepted only
+    as ?ticket= on the stream and WebSocket endpoints for the given scope.
+    """
+    return AuthService(session).mint_ticket(user, body.scope)
+
+
+async def _stream_ticket_user(
+    cameraId: str = Path(pattern=CAMERA_ID_PATTERN),
+    ticket: str | None = Query(default=None),
+    factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),  # noqa: B008
+) -> User:
+    """Authenticate the stream by a `stream:<cameraId>` ticket.
+
+    The session is opened and closed here, so an open stream does not hold a
+    pool connection for its whole life (same reason as P5).
+    """
+    if not ticket:
+        raise AppError(401, "unauthenticated", "Missing ticket")
+    async with factory() as session:
+        return await AuthService(session).verify_ticket(ticket, f"stream:{cameraId}")
+
+
+@camera_router.get("/layout")
+async def get_layout(
+    cameraId: str = Path(pattern=CAMERA_ID_PATTERN),
+    _: User = Depends(require_role("admin")),  # noqa: B008
+    svc: CameraService = Depends(get_camera_service),  # noqa: B008
+) -> dict:
+    """The shared zone layout (one file for all cameras today)."""
+    return svc.get_layout()
+
+
+@camera_router.put("/layout")
+async def put_layout(
+    body: ZonesIn,
+    cameraId: str = Path(pattern=CAMERA_ID_PATTERN),
+    _: User = Depends(require_role("admin")),  # noqa: B008
+    svc: CameraService = Depends(get_camera_service),  # noqa: B008
+) -> dict:
+    count = svc.save_layout(body.anchor, [z.model_dump() for z in body.zones])
+    return {"status": "ok", "zones": count}
+
+
+@camera_router.get("/snapshot")
+async def get_snapshot(
+    cameraId: str = Path(pattern=CAMERA_ID_PATTERN),
+    _: User = Depends(require_role("admin")),  # noqa: B008
+    svc: CameraService = Depends(get_camera_service),  # noqa: B008
+) -> Response:
+    """The latest unannotated frame, for the zone editor's 'capture frame' step."""
+    return Response(
+        content=svc.latest_frame(cameraId, raw=True), media_type="image/jpeg"
+    )
+
+
+@camera_router.get("/stream")
+async def get_stream(
+    cameraId: str = Path(pattern=CAMERA_ID_PATTERN),
+    _: User = Depends(_stream_ticket_user),  # noqa: B008
+    live: LiveState = Depends(get_live_state),  # noqa: B008
+    svc: CameraService = Depends(get_camera_service),  # noqa: B008
+) -> StreamingResponse:
+    """Annotated frames as multipart/x-mixed-replace for a browser <img>."""
+    svc.latest_frame(cameraId, raw=False)  # 404 before the first frame
+
+    async def frames() -> AsyncIterator[bytes]:
+        while True:
+            jpeg = live.frames[cameraId]
+            yield (
+                b"--" + BOUNDARY + b"\r\n"
+                b"Content-Type: image/jpeg\r\n"
+                b"Content-Length: "
+                + str(len(jpeg)).encode()
+                + b"\r\n\r\n"
+                + jpeg
+                + b"\r\n"
+            )
+            await asyncio.sleep(STREAM_INTERVAL)
+
+    return StreamingResponse(
+        frames(), media_type=f"multipart/x-mixed-replace; boundary={BOUNDARY.decode()}"
+    )
+
+
+router.include_router(camera_router)
+router.include_router(tickets_router)

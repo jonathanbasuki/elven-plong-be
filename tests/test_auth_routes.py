@@ -30,7 +30,7 @@ def test_me_returns_camel_case_user() -> None:
     app.dependency_overrides[get_db] = fake_db
     app.dependency_overrides[get_current_user] = lambda: user
     try:
-        response = TestClient(app).get("/api/v1/me")
+        response = TestClient(app).get("/api/v1/profile")
     finally:
         app.dependency_overrides.clear()
     assert response.status_code == 200
@@ -45,7 +45,7 @@ def test_put_push_token_stores_token() -> None:
     app.dependency_overrides[get_current_user] = lambda: user
     try:
         response = TestClient(app).put(
-            "/api/v1/me/push-token", json={"pushToken": "abc"}
+            "/api/v1/profile/push-token", json={"pushToken": "abc"}
         )
     finally:
         app.dependency_overrides.clear()

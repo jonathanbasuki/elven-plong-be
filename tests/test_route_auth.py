@@ -11,7 +11,7 @@ allow-list is probed twice:
    rejected. This catches a route guarded by the wrong mechanism, for example a
    worker route that accepts a bearer token instead of the internal key.
 
-Expected auth is assigned by convention: `/internal/` uses the internal key,
+Expected auth is assigned by convention: `/api/v1/cameras/` uses the internal key,
 `.../stream` uses a `stream:<cameraId>` ticket, the WebSocket takes a bearer or
 a `crowd:live` ticket, and everything else takes a bearer access token.
 """
@@ -99,7 +99,7 @@ def walk_routes(application: FastAPI) -> set[tuple[str, str]]:
 
 def expected_auth(route: tuple[str, str]) -> str:
     method, path = route
-    if path.startswith("/internal/"):
+    if path.startswith("/api/v1/cameras/"):
         return "internal"
     if method == "WS":
         return "bearer_or_ticket"
@@ -242,7 +242,7 @@ def test_walker_flags_deliberately_unprotected_routes() -> None:
     async def hidden() -> dict:
         return {}
 
-    @extra.post("/internal/v1/cameras/{cameraId}/bearer-guarded")
+    @extra.post("/api/v1/cameras/{cameraId}/bearer-guarded")
     async def wrong_mechanism(_user=Depends(get_current_user)) -> dict:  # noqa: B008
         return {}
 
@@ -255,12 +255,12 @@ def test_walker_flags_deliberately_unprotected_routes() -> None:
     assert set(flagged) == {
         ("GET", "/api/v1/oops"),
         ("POST", "/api/v1/hidden"),
-        ("POST", "/internal/v1/cameras/{cameraId}/bearer-guarded"),
+        ("POST", "/api/v1/cameras/{cameraId}/bearer-guarded"),
         ("WS", "/api/v1/open-ws"),
     }
-    assert flagged[
-        ("POST", "/internal/v1/cameras/{cameraId}/bearer-guarded")
-    ].startswith("wrong credentials")
+    assert flagged[("POST", "/api/v1/cameras/{cameraId}/bearer-guarded")].startswith(
+        "wrong credentials"
+    )
 
 
 # --- role matrix -------------------------------------------------------------
@@ -273,13 +273,13 @@ DISPATCH_ROUTES = {
     ("POST", "/api/v1/broadcasts/{broadcastId}/finish"),
 }
 ADMIN_CAMERA_ROUTES = {
-    ("GET", "/api/v1/cameras/{cameraId}/layout"),
-    ("PUT", "/api/v1/cameras/{cameraId}/layout"),
-    ("GET", "/api/v1/cameras/{cameraId}/snapshot"),
+    ("GET", "/dev/cameras/{cameraId}/layout"),
+    ("PUT", "/dev/cameras/{cameraId}/layout"),
+    ("GET", "/dev/cameras/{cameraId}/snapshot"),
 }
 ROLE_MATRIX = {
-    ("GET", "/api/v1/me"): ANY,
-    ("PUT", "/api/v1/me/push-token"): ANY,
+    ("GET", "/api/v1/profile"): ANY,
+    ("PUT", "/api/v1/profile/push-token"): ANY,
     ("GET", "/api/v1/zones"): ANY,
     ("GET", "/api/v1/zones/{zoneId}"): ANY,
     ("GET", "/api/v1/zones/{zoneId}/crowd"): ANY,
@@ -290,17 +290,17 @@ ROLE_MATRIX = {
     ("POST", "/api/v1/broadcasts/{broadcastId}/accept"): {"floor_staff"},
     ("POST", "/api/v1/broadcasts/{broadcastId}/complete"): {"floor_staff"},
     ("POST", "/api/v1/broadcasts/{broadcastId}/finish"): {"ops_manager"},
-    ("GET", "/api/v1/cameras/{cameraId}/layout"): {"admin"},
-    ("PUT", "/api/v1/cameras/{cameraId}/layout"): {"admin"},
-    ("GET", "/api/v1/cameras/{cameraId}/snapshot"): {"admin"},
-    ("POST", "/api/v1/tickets"): {"admin"},
+    ("GET", "/dev/cameras/{cameraId}/layout"): {"admin"},
+    ("PUT", "/dev/cameras/{cameraId}/layout"): {"admin"},
+    ("GET", "/dev/cameras/{cameraId}/snapshot"): {"admin"},
+    ("POST", "/dev/tickets"): {"admin"},
     ("POST", "/dev/cameras/{cameraId}/detections"): {"admin"},
 }
 BODIES = {
-    ("PUT", "/api/v1/me/push-token"): {"pushToken": "t"},
+    ("PUT", "/api/v1/profile/push-token"): {"pushToken": "t"},
     ("POST", "/api/v1/broadcasts"): {"zoneId": "z1", "staffNeeded": 1},
-    ("PUT", "/api/v1/cameras/{cameraId}/layout"): {"anchor": "center", "zones": []},
-    ("POST", "/api/v1/tickets"): {"scope": "crowd:live"},
+    ("PUT", "/dev/cameras/{cameraId}/layout"): {"anchor": "center", "zones": []},
+    ("POST", "/dev/tickets"): {"scope": "crowd:live"},
     ("POST", "/dev/cameras/{cameraId}/detections"): {"counts": {"z1": 1}},
 }
 

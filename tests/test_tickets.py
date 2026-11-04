@@ -114,9 +114,7 @@ def test_only_admin_mints(role, status) -> None:
     app.dependency_overrides[get_db] = fake_db
     app.dependency_overrides[get_current_user] = lambda: fake_user(role)
     try:
-        response = TestClient(app).post(
-            "/api/v1/tickets", json={"scope": "stream:cam1"}
-        )
+        response = TestClient(app).post("/dev/tickets", json={"scope": "stream:cam1"})
     finally:
         app.dependency_overrides.clear()
     assert response.status_code == status
@@ -127,7 +125,7 @@ def test_bad_scope_is_422(scope) -> None:
     app.dependency_overrides[get_current_user] = lambda: fake_user("admin")
     try:
         assert (
-            TestClient(app).post("/api/v1/tickets", json={"scope": scope}).status_code
+            TestClient(app).post("/dev/tickets", json={"scope": scope}).status_code
             == 422
         )
     finally:
@@ -233,7 +231,7 @@ def test_mint_response_body() -> None:
     app.dependency_overrides[get_db] = fake_db
     app.dependency_overrides[get_current_user] = lambda: fake_user("admin")
     try:
-        response = TestClient(app).post("/api/v1/tickets", json={"scope": "crowd:live"})
+        response = TestClient(app).post("/dev/tickets", json={"scope": "crowd:live"})
     finally:
         app.dependency_overrides.clear()
     assert response.status_code == 200
@@ -251,7 +249,7 @@ def test_non_admin_mint_error_shape(role) -> None:
     app.dependency_overrides[get_db] = fake_db
     app.dependency_overrides[get_current_user] = lambda: fake_user(role)
     try:
-        response = TestClient(app).post("/api/v1/tickets", json={"scope": "crowd:live"})
+        response = TestClient(app).post("/dev/tickets", json={"scope": "crowd:live"})
     finally:
         app.dependency_overrides.clear()
     assert response.status_code == 403
@@ -265,7 +263,7 @@ def test_more_bad_scopes_are_422(scope) -> None:
     app.dependency_overrides[get_db] = fake_db
     app.dependency_overrides[get_current_user] = lambda: fake_user("admin")
     try:
-        response = TestClient(app).post("/api/v1/tickets", json={"scope": scope})
+        response = TestClient(app).post("/dev/tickets", json={"scope": scope})
     finally:
         app.dependency_overrides.clear()
     assert response.status_code == 422
@@ -278,7 +276,7 @@ def test_ticket_as_bearer_header_is_401() -> None:
     app.dependency_overrides[get_db] = lambda: _UserById(admin)
     try:
         response = TestClient(app).post(
-            "/api/v1/tickets",
+            "/dev/tickets",
             json={"scope": "crowd:live"},
             headers={"Authorization": f"Bearer {ticket}"},
         )
@@ -295,7 +293,7 @@ def test_ticket_in_body_or_query_does_not_authenticate_mint() -> None:
     app.dependency_overrides[get_db] = lambda: _UserById(admin)
     try:
         response = TestClient(app).post(
-            f"/api/v1/tickets?ticket={ticket}",
+            f"/dev/tickets?ticket={ticket}",
             json={"scope": "crowd:live", "ticket": ticket},
         )
     finally:

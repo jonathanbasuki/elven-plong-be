@@ -1,6 +1,29 @@
+> **Status: historical record. Implemented on `dev/api-contract-rework`, with
+> changes.** This page keeps the design as approved. For what was built, read
+> [ARCHITECTURE.md](../../ARCHITECTURE.md) and
+> [API_REFERENCE.md](../../API_REFERENCE.md); where they differ from this
+> page, they win.
+>
+> Deviations from this design in the built code:
+>
+> - Worker routes are under `/api/v1/cameras/{cameraId}`, not
+>   `/internal/v1/cameras/{cameraId}` (header `X-Internal-Api-Key`, no bearer).
+> - The admin camera tools (layout, snapshot, stream) are under
+>   `/dev/cameras/{cameraId}`, not `/api/v1/cameras/{cameraId}`, and exist only
+>   when `APP_ENV=dev`.
+> - Tickets are minted at `POST /dev/tickets`, not `POST /api/v1/tickets`, so
+>   they exist only in dev. In production there is no browser stream and no
+>   zone editor API; `zones.json` is edited by hand. `WS /api/v1/crowd/live`
+>   still accepts a `crowd:live` ticket, but outside dev only the bearer
+>   header can be obtained.
+> - `GET /me` and `PUT /me/push-token` were built as `GET /api/v1/profile` and
+>   `PUT /api/v1/profile/push-token`.
+> - The `PROPOSAL_*.md` files got a status banner instead of a one-line note.
+
 # Design: Layered backend + clean API contract + admin role
 
-Branch: `dev/api-contract-rework`. Status: **draft, awaiting approval**.
+Branch: `dev/api-contract-rework`. Status at the time of writing: **draft,
+awaiting approval** (since implemented, see the banner above).
 Inputs: [PROPOSAL_ARCHITECTURE.md](../../PROPOSAL_ARCHITECTURE.md),
 [PROPOSAL_API_CONTRACT.md](../../PROPOSAL_API_CONTRACT.md). Where this document
 and those proposals differ, this document wins.
@@ -161,8 +184,8 @@ App routes use a bearer access token. Prefix `/api/v1`.
 | Method + path | Role | Replaces |
 |---|---|---|
 | `POST /auth/login`, `/auth/refresh`, `/auth/logout` | public / refresh token | same paths |
-| `GET /me` | any | `GET /auth/profile` |
-| `PUT /me/push-token` | any | `POST /auth/push-token` |
+| `GET /me` (built: `GET /profile`) | any | `GET /auth/profile` |
+| `PUT /me/push-token` (built: `PUT /profile/push-token`) | any | `POST /auth/push-token` |
 | `GET /zones`, `GET /zones/{zoneId}` | any | `/dispatch/zones*` without count/status |
 | `GET /zones/{zoneId}/crowd` | any | `currentCount`+`status` |
 | `GET /zones/{zoneId}/crowd/history?limit=` | any | `/dispatch/zones/{id}/history` |
@@ -180,16 +203,18 @@ unprefixed today: `/ws/counts`, `/detections`, `/zones/{cameraId}`,
 `/frames/…`, `/stream/…`, `/ui/…`. The migration guide (6.9) lists every old
 route with its full path.
 
-Camera admin routes, prefix `/api/v1/cameras/{cameraId}`, role `admin`:
+Camera admin routes, prefix `/api/v1/cameras/{cameraId}` (built:
+`/dev/cameras/{cameraId}`, dev only), role `admin`:
 
 | Method + path | Replaces |
 |---|---|
 | `GET /layout`, `PUT /layout` | `GET/PUT /zones/{cameraId}` |
 | `GET /snapshot` | `GET /frames/{cameraId}/latest` |
 | `GET /stream` (ticket, see 6.4) | `GET /stream/{cameraId}` |
-| `POST /api/v1/tickets` (admin) | new |
+| `POST /api/v1/tickets` (admin; built: `POST /dev/tickets`, dev only) | new |
 
-Worker routes, prefix `/internal/v1/cameras/{cameraId}`, header
+Worker routes, prefix `/internal/v1/cameras/{cameraId}` (built:
+`/api/v1/cameras/{cameraId}`), header
 `X-Internal-Api-Key`:
 
 | Method + path | Replaces |
@@ -255,7 +280,7 @@ APNs dead-token cleanup (410), `users.updated_at` maintenance.
 
 | Today | After |
 |---|---|
-| Blank `INTERNAL_API_KEY` turns worker auth off | Server refuses to start unless `APP_ENV=dev`. Outside dev the key must also be ≥ 32 chars. **[call]** |
+| Blank `INTERNAL_API_KEY` turns worker auth off | Server refuses to start unless `APP_ENV=dev`. Outside dev the key must also be ≥ 32 chars. **[call]** Built: in dev a blank key is allowed at startup but rejects every worker call with 401. |
 | `JWT_SECRET` < 32 chars is found per request (503) | Same startup check, same dev exception |
 | `APP_ENV` is in `.env` but nothing reads it | Add `app_env` to `common/settings.py`, default `"prod"` (fail closed). The dev server's `.env` already has `APP_ENV=dev`; any other deployment must set a strong key and secret |
 | `?key=` in stream/snapshot URLs | Removed. See tickets below |
@@ -263,7 +288,8 @@ APNs dead-token cleanup (410), `users.updated_at` maintenance.
 | Frame and count uploads unbounded | Frame body ≤ 5 MB; `counts` ≤ 50 entries, each int ≥ 0 (≤ 10000). **[call]** |
 
 **Tickets** (needed because `<img>` and browser `WebSocket` cannot send an
-`Authorization` header): `POST /api/v1/tickets` with `{"scope": "stream:<cameraId>"}`
+`Authorization` header): `POST /api/v1/tickets` (built: `POST /dev/tickets`,
+dev only) with `{"scope": "stream:<cameraId>"}`
 or `{"scope": "crowd:live"}`, admin only, returns `{ticket, expiresIn: 60}`.
 A ticket is a JWT signed with the existing secret, with `type="ticket"` and a
 `scope` claim. It is accepted only as `?ticket=` on the stream and WebSocket

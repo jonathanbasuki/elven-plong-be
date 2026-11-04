@@ -21,8 +21,8 @@ Every old route below is removed. Calling an old path now returns
 | `POST /api/v1/auth/login` | `POST /api/v1/auth/login` | public |
 | `POST /api/v1/auth/refresh` | `POST /api/v1/auth/refresh` | refresh token in body |
 | `POST /api/v1/auth/logout` | `POST /api/v1/auth/logout` | refresh token in body |
-| `GET /api/v1/auth/profile` | `GET /api/v1/me` | any role |
-| `POST /api/v1/auth/push-token` | `PUT /api/v1/me/push-token` (method changes to `PUT`) | any role |
+| `GET /api/v1/auth/profile` | `GET /api/v1/profile` | any role |
+| `POST /api/v1/auth/push-token` | `PUT /api/v1/profile/push-token` (method changes to `PUT`) | any role |
 | `GET /api/v1/dispatch/zones` | `GET /api/v1/zones` | any role |
 | `GET /api/v1/dispatch/zones/{zoneId}` | `GET /api/v1/zones/{zoneId}`, plus `GET /api/v1/zones/{zoneId}/crowd` for count and status | any role |
 | `GET /api/v1/dispatch/zones/{zoneId}/history` | `GET /api/v1/zones/{zoneId}/crowd/history` | any role |
@@ -33,13 +33,13 @@ Every old route below is removed. Calling an old path now returns
 | `POST /api/v1/dispatch/broadcasts/{broadcastId}/finish` | `POST /api/v1/broadcasts/{broadcastId}/finish` | `ops_manager` |
 | `GET /api/v1/dispatch/staff/{staffId}` | `GET /api/v1/staff/{staffId}` | any role |
 | `WS /ws/counts` (no auth) | `WS /api/v1/crowd/live` | any role (bearer header), or an admin ticket |
-| `POST /detections` | `POST /internal/v1/cameras/{cameraId}/detections` | cctv worker (`X-Internal-Api-Key`) |
-| `POST /frames/{camera_id}` | `POST /internal/v1/cameras/{cameraId}/frames` | cctv worker |
-| `POST /frames/{camera_id}/raw` | `POST /internal/v1/cameras/{cameraId}/frames/raw` | cctv worker |
-| `GET /frames/{camera_id}/latest?key=` | `GET /api/v1/cameras/{cameraId}/snapshot` | `admin` |
-| `GET /stream/{camera_id}?key=` | `GET /api/v1/cameras/{cameraId}/stream?ticket=` | `admin` ticket only |
-| `GET /zones/{camera_id}` (no auth) | `GET /api/v1/cameras/{cameraId}/layout` | `admin` |
-| `PUT /zones/{camera_id}` (worker key) | `PUT /api/v1/cameras/{cameraId}/layout` | `admin` |
+| `POST /detections` | `POST /api/v1/cameras/{cameraId}/detections` | cctv worker (`X-Internal-Api-Key`) |
+| `POST /frames/{camera_id}` | `POST /api/v1/cameras/{cameraId}/frames` | cctv worker |
+| `POST /frames/{camera_id}/raw` | `POST /api/v1/cameras/{cameraId}/frames/raw` | cctv worker |
+| `GET /frames/{camera_id}/latest?key=` | `GET /dev/cameras/{cameraId}/snapshot` | `admin`, `APP_ENV=dev` only |
+| `GET /stream/{camera_id}?key=` | `GET /dev/cameras/{cameraId}/stream?ticket=` | `admin` ticket only, `APP_ENV=dev` only |
+| `GET /zones/{camera_id}` (no auth) | `GET /dev/cameras/{cameraId}/layout` | `admin`, `APP_ENV=dev` only |
+| `PUT /zones/{camera_id}` (worker key) | `PUT /dev/cameras/{cameraId}/layout` | `admin`, `APP_ENV=dev` only |
 | `GET /ui/{camera_id}` | `GET /dev/cameras/{cameraId}` | open, `APP_ENV=dev` only (see [§7](#7-dev-page)) |
 | `GET /healthz` | `GET /healthz` | public |
 | `GET /readyz` | `GET /readyz` | public |
@@ -48,13 +48,13 @@ New routes with no old equivalent:
 
 | Route | Who may call it |
 |---|---|
-| `POST /api/v1/tickets` | `admin` |
+| `POST /dev/tickets` | `admin`, `APP_ENV=dev` only |
 | `POST /dev/cameras/{cameraId}/detections` | `admin`, `APP_ENV=dev` only |
 
 `{cameraId}` must match `^[A-Za-z0-9_-]{1,64}$` on every camera route;
 anything else is a `422`.
 
-The routes the iOS app is expected to use are the `auth`, `me`, `zones`,
+The routes the iOS app is expected to use are the `auth`, `profile`, `zones`,
 `broadcasts`, `staff` and `crowd/live` rows. The camera, ticket, worker and dev
 routes are for the cctv worker and the dev page. Which fields the app reads
 today is not known to the backend: **[TBD-2]**.
@@ -83,12 +83,12 @@ Request bodies for `/refresh` and `/logout` change from
 `{"refresh_token": "..."}` to `{"refreshToken": "..."}`. `/logout` still returns
 `200 {"status": "ok"}`.
 
-### `GET /api/v1/me`
+### `GET /api/v1/profile`
 
 Returns `{id, email, fullName, role, isActive}` (was `GET /auth/profile` with
 `full_name` and `is_active`).
 
-### `PUT /api/v1/me/push-token`
+### `PUT /api/v1/profile/push-token`
 
 Body is unchanged: `{"pushToken": "..."}`. Response: `{"status": "ok"}`.
 
@@ -105,12 +105,13 @@ Body is unchanged: `{"pushToken": "..."}`. Response: `{"status": "ok"}`.
   returns one zone today (single-zone proof of concept).
 - `GET /api/v1/zones/{zoneId}/crowd/history?limit=` returns
   `[{bucketStart, avgCount, peakCount}]`, newest first, same fields as the old
-  `/history`. `limit` default 12, range 1 to 288.
+  `/history`. `limit` default 12, range 1 to 288. An unknown zone returns
+  `200 []`, not `404`.
 
 ### Broadcasts
 
-- `GET /api/v1/dispatch/broadcasts/current?zoneId=z2` becomes
-  `GET /api/v1/broadcasts?zoneId=z2&status=open`. It returns a **list**, newest
+- `GET /api/v1/dispatch/broadcasts/current?zoneId=z1` becomes
+  `GET /api/v1/broadcasts?zoneId=z1&status=open`. It returns a **list**, newest
   first. No match is `200 []`, **not** `404`. To get the latest broadcast of any
   status (what `current` used to return), omit `status` and read the first item.
 - Query parameters: `zoneId` (optional), `status` (`open`, `closed`,
@@ -130,7 +131,8 @@ Body is unchanged: `{"pushToken": "..."}`. Response: `{"status": "ok"}`.
 
 ### WebSocket message
 
-`WS /api/v1/crowd/live` sends `{"cameraId": "...", "counts": {"z2": 3}}`. The old
+`WS /api/v1/crowd/live` sends `{"cameraId": "...", "counts": {"z1": 3}}` for every
+count post (worker or dev page), to every connected client. The old
 `/ws/counts` sent `camera_id`. Messages from the client are ignored.
 
 ## 3. Datetimes now end in `Z`
@@ -158,7 +160,7 @@ Before, auth, stream and zone errors and all 422s used FastAPI's
 
 | Status | `error.code` | When |
 |---|---|---|
-| 401 | `unauthenticated` | missing, invalid or expired token or ticket; wrong email or password. The response keeps `WWW-Authenticate: Bearer`. |
+| 401 | `unauthenticated` | missing, invalid or expired token or ticket; a ticket whose user is no longer an active `admin`; wrong or missing `X-Internal-Api-Key`; wrong email or password. The response keeps `WWW-Authenticate: Bearer`. |
 | 403 | `wrong_role` | the user's role may not call this route |
 | 403 | `not_your_response` | `complete` by a `floor_staff` user who did not accept this broadcast |
 | 404 | `not_found` | unknown zone, broadcast, staff, camera frame, or route |
@@ -168,7 +170,7 @@ Before, auth, stream and zone errors and all 422s used FastAPI's
 | 409 | `already_delegating` | `accept` while the user is on another broadcast |
 | 409 | `not_all_done` | `finish` before every accepted staff member completed |
 | 413 | `payload_too_large` | worker frame over 5 MB |
-| 422 | `validation_error` | bad body, query or path value. `message` lists each problem as `location: reason`, joined by `; ` |
+| 422 | `validation_error` | bad body, query or path value, or an invalid zone layout on `PUT /dev/cameras/{cameraId}/layout`. For framework validation, `message` lists each problem as `location: reason`, joined by `; ` |
 | 503 | `auth_not_configured` | `JWT_SECRET` shorter than 32 characters (only reachable with `APP_ENV=dev`) |
 | other | `http_error` | any other framework status, for example `405` |
 
@@ -183,7 +185,9 @@ Source: `src/plong_elven/api/main.py` (`_STATUS_TO_CODE` and the three handlers)
 - Roles do not inherit. `admin` has **no** dispatch powers: an admin calling
   `POST /broadcasts`, `accept`, `complete` or `finish` gets
   `403 wrong_role` (`tests/test_broadcasts.py::test_admin_cannot_create_broadcast`).
-- `admin` is the only role that may mint tickets and use the camera routes.
+- `admin` is the only role that may mint tickets and use the `/dev/cameras` routes
+  (layout, snapshot, stream, manual detections). All of them exist only when
+  `APP_ENV=dev`.
 - `complete` now requires `floor_staff`. Before, any role reached the handler,
   and an `ops_manager` got `403 not_your_response`; it now gets
   `403 wrong_role`.
@@ -212,19 +216,23 @@ before accepting it. Whether the app uses the WebSocket at all: **[TBD-3]**.
 ### Browser: tickets
 
 A browser `<img>` and the browser `WebSocket` API cannot send an
-`Authorization` header, so the dev page uses tickets:
+`Authorization` header, so the dev page uses tickets. Tickets can be minted only
+by `POST /dev/tickets`, which exists only when `APP_ENV=dev`. A production
+server cannot mint one, so the browser stream is unavailable there:
 
-1. `POST /api/v1/tickets` with a bearer **admin** access token and
+1. `POST /dev/tickets` with a bearer **admin** access token and
    `{"scope": "stream:<cameraId>"}` or `{"scope": "crowd:live"}`. Other roles
    get `403 wrong_role`; any other scope gets `422`.
 2. The response is `{"ticket": "...", "expiresIn": 60}`.
 3. Pass it as a query parameter:
-   `GET /api/v1/cameras/{cameraId}/stream?ticket=...` or
+   `GET /dev/cameras/{cameraId}/stream?ticket=...` or
    `WS /api/v1/crowd/live?ticket=...`.
 
 Rules (from `src/plong_elven/services/auth_service.py` and `tests/test_tickets.py`):
 
 - A ticket lives **60 seconds**.
+- When the ticket is used, its user is loaded again and must still be active
+  and `admin`; otherwise `401`.
 - It works only for its own scope: a `stream:cam1` ticket fails on `cam2` and
   on the WebSocket; a `crowd:live` ticket fails on the stream.
 - A ticket is not an access token, and an access token is not a ticket. Using
@@ -251,8 +259,10 @@ use tickets. The access token is kept in a JS variable, not `localStorage`.
 
 Only relevant if you run the worker yourself.
 
-- Routes move under `/internal/v1/cameras/{cameraId}/` (see the table in §1).
-- The detections body loses `camera_id`: it is now `{"counts": {"z2": 3}}`, and
+- Routes move under `/api/v1/cameras/{cameraId}/` (see the table in §1). They are
+  the one group under `/api/v1` that takes `X-Internal-Api-Key`, not a bearer
+  token.
+- The detections body loses `camera_id`: it is now `{"counts": {"z1": 3}}`, and
   the camera id is in the path. A `camera_id` field sent in the body is ignored.
 - `counts` holds at most 50 zones; each count is an integer from 0 to 10000;
   each zone key matches `^[A-Za-z0-9_-]{1,64}$`. Otherwise `422`.

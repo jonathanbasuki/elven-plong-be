@@ -56,7 +56,7 @@ def test_background_job_uses_its_own_session(fake_push_sender) -> None:
     )
     try:
         response = TestClient(app).post(
-            "/internal/v1/cameras/cam1/detections",
+            "/api/v1/cameras/cam1/detections",
             json={"counts": {"z1": 4}},
             headers={"X-Internal-Api-Key": TEST_INTERNAL_KEY},
         )

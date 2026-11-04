@@ -1,4 +1,4 @@
-"""Worker routes under /internal/v1/cameras/{cameraId} (Task 2.6)."""
+"""Worker routes under /api/v1/cameras/{cameraId} (Task 2.6)."""
 
 import pytest
 from conftest import FakeSessionFactory, fake_user
@@ -60,7 +60,7 @@ def test_detection_updates_live_counts_and_publishes(
             headers={"Authorization": f"Bearer {create_access_token(admin)}"},
         ) as ws:
             response = client.post(
-                "/internal/v1/cameras/cam1/detections",
+                "/api/v1/cameras/cam1/detections",
                 json={"counts": {"z1": 3}},
                 headers=internal_headers,
             )
@@ -74,7 +74,7 @@ def test_detection_updates_live_counts_and_publishes(
 
 def test_detection_without_connected_clients(live, internal_headers) -> None:
     response = TestClient(app).post(
-        "/internal/v1/cameras/cam1/detections",
+        "/api/v1/cameras/cam1/detections",
         json={"counts": {"z1": 2}},
         headers=internal_headers,
     )
@@ -84,9 +84,9 @@ def test_detection_without_connected_clients(live, internal_headers) -> None:
 
 
 ROUTES = [
-    ("/internal/v1/cameras/cam1/detections", {"json": {"counts": {"z1": 1}}}),
-    ("/internal/v1/cameras/cam1/frames", {"content": b"jpeg"}),
-    ("/internal/v1/cameras/cam1/frames/raw", {"content": b"jpeg"}),
+    ("/api/v1/cameras/cam1/detections", {"json": {"counts": {"z1": 1}}}),
+    ("/api/v1/cameras/cam1/frames", {"content": b"jpeg"}),
+    ("/api/v1/cameras/cam1/frames/raw", {"content": b"jpeg"}),
 ]
 
 
@@ -133,7 +133,7 @@ def test_blank_internal_key_rejects_every_worker_call(
 )
 def test_counts_bounds(live, internal_headers, body, status) -> None:
     response = TestClient(app).post(
-        "/internal/v1/cameras/cam1/detections", json=body, headers=internal_headers
+        "/api/v1/cameras/cam1/detections", json=body, headers=internal_headers
     )
     assert response.status_code == status
     if status == 422:
@@ -150,7 +150,7 @@ def test_frame_exactly_5mb_ok_and_5mb_plus_one_is_413(
     live, internal_headers, suffix, store
 ) -> None:
     client = TestClient(app)
-    path = f"/internal/v1/cameras/cam1/{suffix}"
+    path = f"/api/v1/cameras/cam1/{suffix}"
     headers = {"Content-Type": "image/jpeg", **internal_headers}
     ok = client.post(path, content=b"x" * FIVE_MB, headers=headers)
     assert ok.status_code == 200
@@ -170,7 +170,7 @@ def test_chunked_frame_over_5mb_is_413(live, internal_headers) -> None:
             yield b"z" * (1024 * 1024)
 
     response = TestClient(app).post(
-        "/internal/v1/cameras/cam9/frames",
+        "/api/v1/cameras/cam9/frames",
         content=chunks(),
         headers={"Content-Type": "image/jpeg", **internal_headers},
     )
@@ -183,7 +183,7 @@ def test_chunked_frame_over_5mb_is_413(live, internal_headers) -> None:
 @pytest.mark.parametrize("bad", ["a%22b", "a%3Cscript%3E", "c" * 65])
 def test_bad_camera_id_is_422(live, internal_headers, suffix, bad) -> None:
     response = TestClient(app).post(
-        f"/internal/v1/cameras/{bad}/{suffix}",
+        f"/api/v1/cameras/{bad}/{suffix}",
         json={"counts": {"z1": 1}},
         headers=internal_headers,
     )

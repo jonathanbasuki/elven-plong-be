@@ -14,10 +14,8 @@ from plong_elven.api.routers.broadcasts import router as broadcasts_router
 from plong_elven.api.routers.cameras import router as cameras_router
 from plong_elven.api.routers.crowd import router as crowd_router
 from plong_elven.api.routers.dev import router as dev_router
-from plong_elven.api.routers.internal import router as internal_router
-from plong_elven.api.routers.me import router as me_router
+from plong_elven.api.routers.profile import router as profile_router
 from plong_elven.api.routers.staff import router as staff_router
-from plong_elven.api.routers.tickets import router as tickets_router
 from plong_elven.api.routers.zones import router as zones_router
 from plong_elven.common.settings import check_security_settings, get_settings
 from plong_elven.db.session import get_db
@@ -45,13 +43,11 @@ def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
     application = FastAPI(title="Plong Elven API", version="0.1.0", lifespan=lifespan)
     application.include_router(auth_router)
-    application.include_router(me_router)
+    application.include_router(profile_router)
     application.include_router(cameras_router)
     application.include_router(crowd_router)
     application.include_router(broadcasts_router)
-    application.include_router(internal_router)
     application.include_router(staff_router)
-    application.include_router(tickets_router)
     application.include_router(zones_router)
     if get_settings().app_env == "dev":
         application.include_router(dev_router)  # dev page, APP_ENV=dev only (§6.1)

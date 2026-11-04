@@ -1,4 +1,4 @@
-"""Camera admin routes under /api/v1/cameras/{cameraId} (Task 2.7).
+"""Camera admin routes under /dev/cameras/{cameraId} (Task 2.7).
 
 Ported from the deleted tests/test_stream.py and tests/test_zones_api.py, plus
 the admin-role and ticket checks that replace the old ?key= query parameter.
@@ -64,7 +64,7 @@ def _ticket(user, scope: str) -> str:
 def _post_frame(client, camera_id: str, body: bytes, headers, raw: bool) -> None:
     suffix = "/raw" if raw else ""
     response = client.post(
-        f"/internal/v1/cameras/{camera_id}/frames{suffix}",
+        f"/api/v1/cameras/{camera_id}/frames{suffix}",
         content=body,
         headers={"Content-Type": "image/jpeg", **headers},
     )
@@ -83,7 +83,7 @@ def test_snapshot_returns_the_posted_raw_jpeg(admin, internal_headers) -> None:
     client = TestClient(app)
     _post_frame(client, "cam2", JPEG, internal_headers, raw=True)
 
-    response = client.get("/api/v1/cameras/cam2/snapshot")
+    response = client.get("/dev/cameras/cam2/snapshot")
 
     assert response.status_code == 200
     assert response.headers["content-type"] == "image/jpeg"
@@ -97,20 +97,20 @@ def test_snapshot_is_independent_of_annotated_frame(admin, internal_headers) -> 
     _post_frame(client, "cam3", annotated, internal_headers, raw=False)
     _post_frame(client, "cam3", raw, internal_headers, raw=True)
 
-    response = client.get("/api/v1/cameras/cam3/snapshot")
+    response = client.get("/dev/cameras/cam3/snapshot")
 
     assert response.content == raw
     assert response.content != annotated
 
 
 def test_snapshot_404_before_any_frame_posted(admin) -> None:
-    response = TestClient(app).get("/api/v1/cameras/never-posted/snapshot")
+    response = TestClient(app).get("/dev/cameras/never-posted/snapshot")
 
     _assert_error(response, 404, "not_found")
 
 
 def test_snapshot_requires_auth(live) -> None:
-    response = TestClient(app).get("/api/v1/cameras/cam1/snapshot")
+    response = TestClient(app).get("/dev/cameras/cam1/snapshot")
 
     _assert_error(response, 401, "unauthenticated")
 
@@ -119,14 +119,14 @@ def test_snapshot_requires_auth(live) -> None:
 def test_snapshot_requires_admin(live, role) -> None:
     app.dependency_overrides[get_current_user] = lambda: fake_user(role)
 
-    response = TestClient(app).get("/api/v1/cameras/cam1/snapshot")
+    response = TestClient(app).get("/dev/cameras/cam1/snapshot")
 
     _assert_error(response, 403, "wrong_role")
 
 
 def test_snapshot_key_query_param_no_longer_works(live) -> None:
     response = TestClient(app).get(
-        "/api/v1/cameras/cam1/snapshot", params={"key": TEST_INTERNAL_KEY}
+        "/dev/cameras/cam1/snapshot", params={"key": TEST_INTERNAL_KEY}
     )
 
     _assert_error(response, 401, "unauthenticated")
@@ -141,7 +141,7 @@ def test_stream_with_matching_ticket_streams(admin, internal_headers) -> None:
 
     with client.stream(
         "GET",
-        "/api/v1/cameras/cam1/stream",
+        "/dev/cameras/cam1/stream",
         params={"ticket": _ticket(admin, "stream:cam1")},
     ) as response:
         assert response.status_code == 200
@@ -152,7 +152,7 @@ def test_stream_with_matching_ticket_streams(admin, internal_headers) -> None:
 
 def test_stream_404_before_any_frame_posted(admin) -> None:
     response = TestClient(app).get(
-        "/api/v1/cameras/never-posted/stream",
+        "/dev/cameras/never-posted/stream",
         params={"ticket": _ticket(admin, "stream:never-posted")},
     )
 
@@ -160,7 +160,7 @@ def test_stream_404_before_any_frame_posted(admin) -> None:
 
 
 def test_stream_without_ticket_is_401(admin) -> None:
-    response = TestClient(app).get("/api/v1/cameras/cam1/stream")
+    response = TestClient(app).get("/dev/cameras/cam1/stream")
 
     _assert_error(response, 401, "unauthenticated")
     assert response.headers["www-authenticate"] == "Bearer"
@@ -171,7 +171,7 @@ def test_stream_with_other_camera_ticket_is_401(admin, internal_headers) -> None
     _post_frame(client, "cam1", JPEG, internal_headers, raw=False)
 
     response = client.get(
-        "/api/v1/cameras/cam1/stream",
+        "/dev/cameras/cam1/stream",
         params={"ticket": _ticket(admin, "stream:cam2")},
     )
 
@@ -188,7 +188,7 @@ def test_stream_rejects_non_stream_tickets(admin, internal_headers, kind) -> Non
         "garbage": "not-a-jwt",
     }[kind]
 
-    response = client.get("/api/v1/cameras/cam1/stream", params={"ticket": token})
+    response = client.get("/dev/cameras/cam1/stream", params={"ticket": token})
 
     _assert_error(response, 401, "unauthenticated")
 
@@ -197,9 +197,7 @@ def test_stream_key_query_param_no_longer_works(admin, internal_headers) -> None
     client = TestClient(app)
     _post_frame(client, "cam1", JPEG, internal_headers, raw=False)
 
-    response = client.get(
-        "/api/v1/cameras/cam1/stream", params={"key": TEST_INTERNAL_KEY}
-    )
+    response = client.get("/dev/cameras/cam1/stream", params={"key": TEST_INTERNAL_KEY})
 
     _assert_error(response, 401, "unauthenticated")
 
@@ -210,7 +208,7 @@ def test_stream_ignores_bearer_header(admin, internal_headers) -> None:
     _post_frame(client, "cam1", JPEG, internal_headers, raw=False)
 
     response = client.get(
-        "/api/v1/cameras/cam1/stream",
+        "/dev/cameras/cam1/stream",
         headers={"Authorization": f"Bearer {create_access_token(admin)}"},
     )
 
@@ -234,7 +232,7 @@ def test_stream_auth_session_is_closed_before_streaming(live, internal_headers) 
 
     with client.stream(
         "GET",
-        "/api/v1/cameras/cam1/stream",
+        "/dev/cameras/cam1/stream",
         params={"ticket": _ticket(user, "stream:cam1")},
     ) as response:
         next(response.iter_bytes())
@@ -245,7 +243,7 @@ def test_stream_auth_session_is_closed_before_streaming(live, internal_headers) 
 
 
 def test_get_layout_defaults_when_file_missing(admin, zones_path) -> None:
-    response = TestClient(app).get("/api/v1/cameras/cam1/layout")
+    response = TestClient(app).get("/dev/cameras/cam1/layout")
 
     assert response.status_code == 200
     assert response.json() == {"anchor": "bottom_center", "zones": []}
@@ -254,11 +252,11 @@ def test_get_layout_defaults_when_file_missing(admin, zones_path) -> None:
 def test_put_then_get_layout_round_trips(admin, zones_path) -> None:
     client = TestClient(app)
 
-    put = client.put("/api/v1/cameras/cam1/layout", json=LAYOUT)
+    put = client.put("/dev/cameras/cam1/layout", json=LAYOUT)
     assert put.status_code == 200
     assert put.json() == {"status": "ok", "zones": 1}
 
-    get = client.get("/api/v1/cameras/cam1/layout")
+    get = client.get("/dev/cameras/cam1/layout")
     assert get.json()["anchor"] == "center"
     assert get.json()["zones"][0]["id"] == "z1"
     assert json.loads(zones_path.read_text())["zones"][0]["name"] == "Left"
@@ -309,7 +307,7 @@ def _zone(**overrides) -> dict:
     ],
 )
 def test_put_layout_rejects_bad_input(admin, zones_path, body) -> None:
-    response = TestClient(app).put("/api/v1/cameras/cam1/layout", json=body)
+    response = TestClient(app).put("/dev/cameras/cam1/layout", json=body)
 
     _assert_error(response, 422, "validation_error")
     assert not zones_path.exists()
@@ -318,19 +316,19 @@ def test_put_layout_rejects_bad_input(admin, zones_path, body) -> None:
 def test_put_layout_accepts_50_zones(admin, zones_path) -> None:
     body = {"anchor": "bottom_center", "zones": [_zone(id=f"z{i}") for i in range(50)]}
 
-    response = TestClient(app).put("/api/v1/cameras/cam1/layout", json=body)
+    response = TestClient(app).put("/dev/cameras/cam1/layout", json=body)
 
     assert response.json() == {"status": "ok", "zones": 50}
 
 
 def test_get_layout_requires_auth(live, zones_path) -> None:
-    response = TestClient(app).get("/api/v1/cameras/cam1/layout")
+    response = TestClient(app).get("/dev/cameras/cam1/layout")
 
     _assert_error(response, 401, "unauthenticated")
 
 
 def test_put_layout_requires_auth(live, zones_path) -> None:
-    response = TestClient(app).put("/api/v1/cameras/cam1/layout", json=LAYOUT)
+    response = TestClient(app).put("/dev/cameras/cam1/layout", json=LAYOUT)
 
     _assert_error(response, 401, "unauthenticated")
     assert not zones_path.exists()
@@ -340,7 +338,7 @@ def test_put_layout_internal_key_no_longer_works(
     live, zones_path, internal_headers
 ) -> None:
     response = TestClient(app).put(
-        "/api/v1/cameras/cam1/layout", json=LAYOUT, headers=internal_headers
+        "/dev/cameras/cam1/layout", json=LAYOUT, headers=internal_headers
     )
 
     _assert_error(response, 401, "unauthenticated")
@@ -352,7 +350,7 @@ def test_layout_requires_admin(live, zones_path, role, method) -> None:
     app.dependency_overrides[get_current_user] = lambda: fake_user(role)
 
     response = TestClient(app).request(
-        method, "/api/v1/cameras/cam1/layout", json=LAYOUT if method == "PUT" else None
+        method, "/dev/cameras/cam1/layout", json=LAYOUT if method == "PUT" else None
     )
 
     _assert_error(response, 403, "wrong_role")
@@ -370,7 +368,7 @@ def test_layout_requires_admin(live, zones_path, role, method) -> None:
 def test_bad_camera_id_is_422(admin, zones_path, method, suffix, camera_id) -> None:
     response = TestClient(app).request(
         method,
-        f"/api/v1/cameras/{camera_id}/{suffix}",
+        f"/dev/cameras/{camera_id}/{suffix}",
         json=LAYOUT if method == "PUT" else None,
         params={"ticket": _ticket(admin, f"stream:{camera_id}")},
     )

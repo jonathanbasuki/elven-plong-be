@@ -105,13 +105,13 @@ def test_page_has_no_internal_key_and_no_localstorage() -> None:
 def test_page_uses_new_contract() -> None:
     text = TestClient(app).get("/dev/cameras/cam1").text
     assert "/api/v1/auth/login" in text
-    assert "/api/v1/tickets" in text
+    assert "/dev/tickets" in text
     assert '"stream:" + CAMERA_ID' in text
     assert '"crowd:live"' in text
     assert "/api/v1/crowd/live?ticket=" in text
-    assert "/api/v1/cameras/${CAMERA_ID}/stream?ticket=" in text
-    assert "/api/v1/cameras/${CAMERA_ID}/snapshot" in text
-    assert "/api/v1/cameras/${CAMERA_ID}/layout" in text
+    assert "/dev/cameras/${CAMERA_ID}/stream?ticket=" in text
+    assert "/dev/cameras/${CAMERA_ID}/snapshot" in text
+    assert "/dev/cameras/${CAMERA_ID}/layout" in text
     assert "/dev/cameras/${CAMERA_ID}/detections" in text
     assert "msg.cameraId" in text
     assert "Bearer " in text
@@ -186,6 +186,9 @@ def test_dev_routes_absent_outside_dev(monkeypatch) -> None:
 
     client = TestClient(prod_app)
     assert client.get("/dev/cameras/cam1").status_code == 404
+    assert client.post("/dev/tickets", json={"scope": "stream:cam1"}).status_code == 404
+    for suffix in ("layout", "snapshot", "stream"):
+        assert client.get(f"/dev/cameras/cam1/{suffix}").status_code == 404
     assert (
         client.post(
             "/dev/cameras/cam1/detections", json={"counts": {"z1": 1}}

@@ -1,4 +1,4 @@
-"""Current-user routes: profile and push token."""
+"""Profile routes: the current user and their push token."""
 
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -8,11 +8,11 @@ from plong_elven.db.models import User
 from plong_elven.schemas.auth import PushTokenRequest, UserResponse
 from plong_elven.services.auth_service import AuthService, user_response
 
-router = APIRouter(prefix="/api/v1/me", tags=["me"])
+router = APIRouter(prefix="/api/v1/profile", tags=["profile"])
 
 
 @router.get("", response_model=UserResponse)
-async def me(user: User = Depends(get_current_user)) -> UserResponse:  # noqa: B008
+async def get_profile(user: User = Depends(get_current_user)) -> UserResponse:  # noqa: B008
     return user_response(user)
 
 

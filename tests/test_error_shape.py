@@ -8,7 +8,7 @@ from plong_elven.api.deps import get_current_user
 from plong_elven.api.main import app
 from plong_elven.db.session import get_db
 
-PROFILE = "/api/v1/me"
+PROFILE = "/api/v1/profile"
 CREATE_BROADCAST = "/api/v1/broadcasts"
 
 

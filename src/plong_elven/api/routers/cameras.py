@@ -1,109 +1,98 @@
-"""Camera admin routes: zone layout, raw snapshot and the live MJPEG stream.
+"""Camera worker routes: the cctv worker posts counts and JPEG frames here.
 
-Layout and snapshot need a bearer access token with role admin. The stream is
-viewed from a browser <img>, which cannot send headers, so it takes only a
-short-lived `?ticket=` scoped to `stream:<cameraId>` (§6.4). The internal key is
-never accepted here.
-
-# ponytail: frames live in in-memory dicts and every viewer re-reads the latest
-# one. Fine for one API process; swap for Redis if this ever runs behind
-# multiple uvicorn workers.
+Every route needs the X-Internal-Api-Key header (a blank configured key rejects
+every call, P2) and a cameraId matching CAMERA_ID_PATTERN (§6.7). Frame bodies
+are capped at 5 MB (§6.4); count bounds live in DetectionIn. A bearer token is
+never accepted here. The admin camera tools (layout, snapshot, stream) live in
+the dev-only router, `dev.py`.
 """
 
-import asyncio
-from collections.abc import AsyncIterator
-
-from fastapi import APIRouter, Depends, Path, Query, Response
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, BackgroundTasks, Depends, Path, Request
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from plong_elven.api.deps import get_camera_service, get_session_factory, require_role
-from plong_elven.db.models import User
+from plong_elven.api.deps import (
+    get_alert_service,
+    get_camera_service,
+    get_session_factory,
+    require_internal_key,
+)
+from plong_elven.api.routers.crowd import ingest_counts
 from plong_elven.schemas.common import CAMERA_ID_PATTERN
-from plong_elven.schemas.layout import ZonesIn
-from plong_elven.services.auth_service import AuthService
+from plong_elven.schemas.detections import DetectionIn
+from plong_elven.services.alert_service import AlertService
 from plong_elven.services.camera_service import CameraService
 from plong_elven.services.errors import AppError
 from plong_elven.state.live_state import LiveState, get_live_state
 
-router = APIRouter(prefix="/api/v1/cameras/{cameraId}", tags=["cameras"])
-BOUNDARY = b"frame"
-STREAM_INTERVAL = 0.2  # seconds between re-sent frames to each viewer
+MAX_FRAME_BYTES = 5 * 1024 * 1024
+
+router = APIRouter(
+    prefix="/api/v1/cameras/{cameraId}",
+    tags=["cameras"],
+    dependencies=[Depends(require_internal_key)],
+)
 
 
-async def _stream_ticket_user(
-    cameraId: str = Path(pattern=CAMERA_ID_PATTERN),
-    ticket: str | None = Query(default=None),
-    factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),  # noqa: B008
-) -> User:
-    """Authenticate the stream by a `stream:<cameraId>` ticket.
+async def _read_capped_body(
+    request: Request, max_bytes: int = MAX_FRAME_BYTES
+) -> bytes:
+    """Read the request body, refusing anything over max_bytes with a 413.
 
-    The session is opened and closed here, so an open stream does not hold a
-    pool connection for its whole life (same reason as P5).
+    The content-length header is checked first; the running total is checked
+    again while streaming, so a missing or lying header cannot get past the cap.
     """
-    if not ticket:
-        raise AppError(401, "unauthenticated", "Missing ticket")
-    async with factory() as session:
-        return await AuthService(session).verify_ticket(ticket, f"stream:{cameraId}")
+
+    def too_large() -> AppError:
+        return AppError(
+            413, "payload_too_large", f"frame body must be at most {max_bytes} bytes"
+        )
+
+    declared = request.headers.get("content-length")
+    if declared is not None and declared.isdigit() and int(declared) > max_bytes:
+        raise too_large()
+
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > max_bytes:
+            raise too_large()
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
-@router.get("/layout")
-async def get_layout(
+@router.post("/detections")
+async def post_detections(
+    detection: DetectionIn,
+    background_tasks: BackgroundTasks,
     cameraId: str = Path(pattern=CAMERA_ID_PATTERN),
-    _: User = Depends(require_role("admin")),  # noqa: B008
-    svc: CameraService = Depends(get_camera_service),  # noqa: B008
-) -> dict:
-    """The shared zone layout (one file for all cameras today)."""
-    return svc.get_layout()
-
-
-@router.put("/layout")
-async def put_layout(
-    body: ZonesIn,
-    cameraId: str = Path(pattern=CAMERA_ID_PATTERN),
-    _: User = Depends(require_role("admin")),  # noqa: B008
-    svc: CameraService = Depends(get_camera_service),  # noqa: B008
-) -> dict:
-    count = svc.save_layout(body.anchor, [z.model_dump() for z in body.zones])
-    return {"status": "ok", "zones": count}
-
-
-@router.get("/snapshot")
-async def get_snapshot(
-    cameraId: str = Path(pattern=CAMERA_ID_PATTERN),
-    _: User = Depends(require_role("admin")),  # noqa: B008
-    svc: CameraService = Depends(get_camera_service),  # noqa: B008
-) -> Response:
-    """The latest unannotated frame, for the zone editor's 'capture frame' step."""
-    return Response(
-        content=svc.latest_frame(cameraId, raw=True), media_type="image/jpeg"
-    )
-
-
-@router.get("/stream")
-async def get_stream(
-    cameraId: str = Path(pattern=CAMERA_ID_PATTERN),
-    _: User = Depends(_stream_ticket_user),  # noqa: B008
     live: LiveState = Depends(get_live_state),  # noqa: B008
-    svc: CameraService = Depends(get_camera_service),  # noqa: B008
-) -> StreamingResponse:
-    """Annotated frames as multipart/x-mixed-replace for a browser <img>."""
-    svc.latest_frame(cameraId, raw=False)  # 404 before the first frame
-
-    async def frames() -> AsyncIterator[bytes]:
-        while True:
-            jpeg = live.frames[cameraId]
-            yield (
-                b"--" + BOUNDARY + b"\r\n"
-                b"Content-Type: image/jpeg\r\n"
-                b"Content-Length: "
-                + str(len(jpeg)).encode()
-                + b"\r\n\r\n"
-                + jpeg
-                + b"\r\n"
-            )
-            await asyncio.sleep(STREAM_INTERVAL)
-
-    return StreamingResponse(
-        frames(), media_type=f"multipart/x-mixed-replace; boundary={BOUNDARY.decode()}"
+    factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),  # noqa: B008
+    alerts: AlertService = Depends(get_alert_service),  # noqa: B008
+) -> dict:
+    await ingest_counts(
+        cameraId, detection.counts, background_tasks, live, factory, alerts
     )
+    return {"status": "ok"}
+
+
+@router.post("/frames")
+async def post_frame(
+    request: Request,
+    cameraId: str = Path(pattern=CAMERA_ID_PATTERN),
+    svc: CameraService = Depends(get_camera_service),  # noqa: B008
+) -> dict:
+    """Annotated frame (zone outlines, boxes, labels) for the live stream."""
+    svc.put_frame(cameraId, await _read_capped_body(request), raw=False)
+    return {"status": "ok"}
+
+
+@router.post("/frames/raw")
+async def post_raw_frame(
+    request: Request,
+    cameraId: str = Path(pattern=CAMERA_ID_PATTERN),
+    svc: CameraService = Depends(get_camera_service),  # noqa: B008
+) -> dict:
+    """Plain camera frame for the zone editor's 'capture frame' step."""
+    svc.put_frame(cameraId, await _read_capped_body(request), raw=True)
+    return {"status": "ok"}

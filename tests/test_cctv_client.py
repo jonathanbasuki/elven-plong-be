@@ -1,4 +1,4 @@
-"""cctv worker client posts to /internal/v1/cameras/{cameraId}/... (Task 2.6)."""
+"""cctv worker client posts to /api/v1/cameras/{cameraId}/... (Task 2.6)."""
 
 import json
 
@@ -21,7 +21,7 @@ def test_post_counts_uses_internal_route() -> None:
     assert post_counts(_client(seen), "http://api", "k", "cam1", {"z1": 2}) is True
     (req,) = seen
     assert req.method == "POST"
-    assert req.url.path == "/internal/v1/cameras/cam1/detections"
+    assert req.url.path == "/api/v1/cameras/cam1/detections"
     assert json.loads(req.content) == {"counts": {"z1": 2}}
     assert req.headers["X-Internal-Api-Key"] == "k"
 
@@ -29,8 +29,8 @@ def test_post_counts_uses_internal_route() -> None:
 @pytest.mark.parametrize(
     "raw,path",
     [
-        (False, "/internal/v1/cameras/cam1/frames"),
-        (True, "/internal/v1/cameras/cam1/frames/raw"),
+        (False, "/api/v1/cameras/cam1/frames"),
+        (True, "/api/v1/cameras/cam1/frames/raw"),
     ],
 )
 def test_post_frame_uses_internal_route(raw, path) -> None:

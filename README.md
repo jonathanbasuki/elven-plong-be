@@ -8,7 +8,7 @@ notifications to staff and managers; and serves a live HLS camera relay
 (via MediaMTX) plus a small in-browser zone-editor/dev-tools page.
 
 ```text
-Camera --RTSP--> MediaMTX --RTSP--> cctv worker --YOLO--> POST /internal/v1/cameras/{cameraId}/detections --> Postgres
+Camera --RTSP--> MediaMTX --RTSP--> cctv worker --YOLO--> POST /api/v1/cameras/{cameraId}/detections --> Postgres
                     |                                                                     |
                     +--HLS--> iPhone app                                                  +--> APNs push (staff/managers)
 ```
@@ -16,24 +16,27 @@ Camera --RTSP--> MediaMTX --RTSP--> cctv worker --YOLO--> POST /internal/v1/came
 ## Repository structure
 
 ```text
-Plong-Elven/
-├── .github/workflows/       # GitHub Actions for linting and tests
+elven-plong-be/
+├── .github/workflows/       # GitHub Actions: lint, migrations, tests
+├── alembic/                 # Database migrations (alembic.ini at the root)
 ├── docs/                    # Technical documentation and API contracts
 ├── infra/                   # Local infrastructure: PostgreSQL Compose, generated MediaMTX config
 ├── models/                  # Model weights; model files are not committed
-├── scripts/                 # Manual utilities: doctor, create_user, seed_dispatch, mediamtx config gen
+├── scripts/                 # Manual utilities: doctor, create_user, seed_dispatch, benchmark_cctv, mediamtx config gen
 ├── secrets/                 # APNs .p8 auth key; gitignored
 ├── src/plong_elven/         # Main Python application source code
 │   ├── api/                 # FastAPI app and one router per domain (api/routers/)
+│   ├── db/                  # SQLAlchemy models and session
 │   ├── schemas/             # Pydantic request/response DTOs (camelCase)
 │   ├── services/            # Business logic: auth, broadcasts, crowd, cameras, alerts, APNs
 │   ├── state/               # In-memory live counts and frames
 │   ├── cctv/                # Camera -> YOLO -> zone-count detection worker
-│   ├── common/               # Shared settings and zone-status classification
+│   ├── common/              # Settings, zone-status classification, zones.json schema
 │   └── __init__.py          # Package entry point
 ├── tests/                   # Automated tests
 ├── zones.example.json       # Template zone-polygon config, committed
 ├── zones.json               # Your real, per-deployment zones; gitignored
+├── alembic.ini              # Alembic configuration
 ├── .env.example             # Local configuration template without real secrets
 ├── .gitignore               # Files excluded from Git
 ├── .pre-commit-config.yaml  # Pre-commit linting and secret scanning hooks
@@ -47,23 +50,46 @@ Plong-Elven/
 | Area | Endpoints | Docs |
 |---|---|---|
 | Health/readiness | `GET /healthz`, `GET /readyz` | — |
-| Auth (JWT + refresh tokens, roles) | `POST /api/v1/auth/{login,refresh,logout}`, `GET /api/v1/me`, `PUT /api/v1/me/push-token` | [docs/SETUP_AUTH.md](docs/SETUP_AUTH.md), [docs/AUTH_SCHEMA.md](docs/AUTH_SCHEMA.md) |
+| Auth (JWT + refresh tokens, roles) | `POST /api/v1/auth/{login,refresh,logout}`, `GET /api/v1/profile`, `PUT /api/v1/profile/push-token` | [docs/SETUP_AUTH.md](docs/SETUP_AUTH.md), [docs/AUTH_SCHEMA.md](docs/AUTH_SCHEMA.md) |
 | Zones, live crowd, 5-min history | `GET /api/v1/zones[/{zoneId}]`, `GET /api/v1/zones/{zoneId}/crowd[/history]`, `WS /api/v1/crowd/live` | [docs/DISPATCH_API.md](docs/DISPATCH_API.md) |
 | Crowd dispatch (broadcasts, staff) | `/api/v1/broadcasts*`, `GET /api/v1/staff/{staffId}` | [docs/DISPATCH_API.md](docs/DISPATCH_API.md) |
-| CCTV ingestion (worker) | `POST /internal/v1/cameras/{cameraId}/{detections,frames,frames/raw}` | [docs/SETUP_CCTV.md](docs/SETUP_CCTV.md) |
-| Camera admin: layout, snapshot, live annotated stream | `GET`/`PUT /api/v1/cameras/{cameraId}/layout`, `GET /api/v1/cameras/{cameraId}/{snapshot,stream}`, `POST /api/v1/tickets` | [docs/SETUP_CCTV.md](docs/SETUP_CCTV.md) |
-| In-browser live view / zone editor / dev tools (`APP_ENV=dev` only) | `GET /dev/cameras/{cameraId}`, `POST /dev/cameras/{cameraId}/detections` | step 11 below |
-| Push notifications (APNs) | fired internally on broadcast creation and crowd-status change | [docs/PUSH_NOTIFICATIONS.md](docs/PUSH_NOTIFICATIONS.md) |
+| CCTV ingestion (worker) | `POST /api/v1/cameras/{cameraId}/{detections,frames,frames/raw}` | [docs/SETUP_CCTV.md](docs/SETUP_CCTV.md) |
+| Camera admin: layout, snapshot, live annotated stream (`admin`, `APP_ENV=dev` only) | `GET`/`PUT /dev/cameras/{cameraId}/layout`, `GET /dev/cameras/{cameraId}/snapshot`, `GET /dev/cameras/{cameraId}/stream?ticket=` (ticket from `POST /dev/tickets`) | [docs/SETUP_CCTV.md](docs/SETUP_CCTV.md) |
+| In-browser live view / zone editor / dev tools (`APP_ENV=dev` only) | `GET /dev/cameras/{cameraId}` (no login), `POST /dev/cameras/{cameraId}/detections` (`admin`) | step 11 below |
+| Push notifications (APNs) | fired internally: to `floor_staff` on broadcast creation, to `ops_manager` when a zone enters `warning` or `crowded` | [docs/PUSH_NOTIFICATIONS.md](docs/PUSH_NOTIFICATIONS.md) |
 | Live HLS camera relay (MediaMTX) | external process, not an API route | [docs/SETUP_HLS.md](docs/SETUP_HLS.md) |
 
+The `/dev/*` routes are registered only when `APP_ENV=dev`; otherwise they
+return `404`.
+
 Every endpoint except `/healthz`, `/readyz`, `POST /api/v1/auth/login`,
-`/refresh`, `/logout` and the dev page itself needs credentials: a bearer
+`/refresh`, `/logout`, FastAPI's `/docs`, `/redoc` and `/openapi.json`, and the
+dev page itself needs credentials: a bearer
 access token for `/api/v1/*`, `X-Internal-Api-Key` for the worker routes under
-`/internal/v1/*`, or a short-lived `?ticket=` for the browser stream and
-WebSocket. Roles are `floor_staff`, `ops_manager` and `admin`; they do not
+`/api/v1/cameras/*` (the one exception to the bearer rule), or a short-lived
+`?ticket=` for the dev page's stream and the WebSocket. Roles are `floor_staff`, `ops_manager` and `admin`; they do not
 inherit, and `admin` has no dispatch powers. Every error is
 `{"error": {"code": "...", "message": "..."}}` and all JSON is camelCase.
 Moving from the old routes: [docs/API_V1_MIGRATION.md](docs/API_V1_MIGRATION.md).
+
+## Documentation
+
+| Document | What it covers |
+|---|---|
+| [docs/FRONTEND_GUIDE.md](docs/FRONTEND_GUIDE.md) | Start here if you build the app: what to call, in what order, with examples |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Components, data flow, code layout |
+| [docs/API_REFERENCE.md](docs/API_REFERENCE.md) | Every route, its role, request and response |
+| [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Environment variables and config files |
+| [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | Local workflow, make targets, tests, CI |
+| [docs/DISPATCH_API.md](docs/DISPATCH_API.md) | Zones, crowd, broadcasts and staff, with curl examples |
+| [docs/API_V1_MIGRATION.md](docs/API_V1_MIGRATION.md) | Old routes to new routes, for the iOS app |
+| [docs/SETUP_AUTH.md](docs/SETUP_AUTH.md) | Auth setup, users, tokens |
+| [docs/AUTH_SCHEMA.md](docs/AUTH_SCHEMA.md) | Auth tables and roles |
+| [docs/SETUP_CCTV.md](docs/SETUP_CCTV.md) | Running the cctv worker |
+| [docs/SETUP_HLS.md](docs/SETUP_HLS.md) | MediaMTX HLS relay |
+| [docs/PUSH_NOTIFICATIONS.md](docs/PUSH_NOTIFICATIONS.md) | APNs setup and when pushes are sent |
+| [docs/PROPOSAL_ARCHITECTURE.md](docs/PROPOSAL_ARCHITECTURE.md), [docs/PROPOSAL_API_CONTRACT.md](docs/PROPOSAL_API_CONTRACT.md) | Earlier design proposals |
+| [docs/superpowers/](docs/superpowers/) | Design spec and implementation plans for the API contract rework |
 
 ## Requirements
 
@@ -117,8 +143,8 @@ POSTGRES_PASSWORD=<pick-a-local-password>
 DATABASE_URL=postgresql+asyncpg://plong_elven:<same-password>@127.0.0.1:5432/plong_elven
 ```
 
-Leave `INTERNAL_API_KEY`, `RTSP_URL`, and the `APNS_*` values empty for now.
-They are only needed for the CCTV worker, HLS relay, and push notifications
+Leave `INTERNAL_API_KEY` and the `APNS_*` values empty, and `RTSP_URL` as the
+placeholder, for now. They are only needed for the CCTV worker, HLS relay, and push notifications
 respectively (steps 8–10); the worker needs a non-blank `INTERNAL_API_KEY`
 (generate one the same way). Never commit `.env`.
 
@@ -152,11 +178,17 @@ starting the API.
 
 ### 6. Seed local users and a zone
 
+The seed script reads the zone from `zones.json` (or `ZONES_PATH`), so copy
+the template first. `zones.json` is gitignored: it is your real deployment's
+zone layout, not code.
+
 ```bash
+cp zones.example.json zones.json
 uv run --env-file .env python scripts/seed_dispatch.py
 ```
 
-Creates one zone (`z2`, from `zones.example.json`/`zones.json`) and five users,
+Creates one zone (the first zone in `zones.json`: `z1` from the template, with
+`warning_threshold=5` and `crowded_threshold=10`) and five users,
 all sharing the password `password123`: `admin@plongelven.io` (`admin`),
 `manager@plongelven.io` (`ops_manager`), and `bunga@`, `citra@` and
 `dedi@plongelven.io` (`floor_staff`). See [docs/SETUP_AUTH.md](docs/SETUP_AUTH.md) to create users
@@ -188,21 +220,14 @@ Download YOLO weights once:
 make models
 ```
 
-Copy the zone template once (gitignored — it's your real deployment's zone
-layout, not code):
-
-```bash
-cp zones.example.json zones.json
-```
-
-Point a webcam, video file, or RTSP camera at the worker:
+The worker reads `zones.json` (created in step 6). Point a webcam, video file, or RTSP camera at the worker:
 
 ```bash
 make cctv ARGS="0 --dry-run"   # webcam, prints counts instead of posting
 ```
 
 Drop `--dry-run` to actually post to
-`POST /internal/v1/cameras/{cameraId}/detections` once the API is running
+`POST /api/v1/cameras/{cameraId}/detections` once the API is running
 (set the same non-blank `INTERNAL_API_KEY` for both). Full walkthrough, including RTSP setup and the annotated MJPEG
 stream: [docs/SETUP_CCTV.md](docs/SETUP_CCTV.md).
 
@@ -234,11 +259,11 @@ http://127.0.0.1:8080/dev/cameras/default
 The page opens without login, then asks you to log in with an admin account
 (`admin@plongelven.io` from step 6). Every call it makes uses that login: the
 access token is kept in memory only, and the stream and live counts use
-60-second tickets from `POST /api/v1/tickets`. Three tabs:
+60-second tickets from `POST /dev/tickets`. Three tabs:
 
 - **Live Feed** — the MJPEG stream plus live per-zone counts.
 - **Edit Zones** — capture a frame, click to draw a zone polygon, save to
-  `zones.json` via `PUT /api/v1/cameras/{cameraId}/layout`. The worker reloads
+  `zones.json` via `PUT /dev/cameras/{cameraId}/layout`. The worker reloads
   it automatically within 2 seconds, no restart needed.
 - **Dev Tools** — manually set a count for a zone via
   `POST /dev/cameras/{cameraId}/detections`, to drive
@@ -273,4 +298,6 @@ git push -u origin feat/your-change
 ```
 
 Keep model weights, recordings, camera URLs, and APNs keys outside Git. Every
-push and pull request runs the API lint and test checks in GitHub Actions.
+push and pull request runs `.github/workflows/ci.yml`: `ruff check`, `ruff
+format --check`, `alembic upgrade head`, a one-step downgrade and upgrade, and
+`pytest` against a PostgreSQL 16 service with `APP_ENV=dev`.

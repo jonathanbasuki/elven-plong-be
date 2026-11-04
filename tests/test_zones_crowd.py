@@ -74,7 +74,7 @@ def client_as():
 def test_crowd_uses_latest_detection_count(client_as, internal_headers) -> None:
     client = client_as("floor_staff")
     detection = client.post(
-        "/internal/v1/cameras/cam1/detections",
+        "/api/v1/cameras/cam1/detections",
         json={"counts": {"z1": 7}},
         headers=internal_headers,
     )
