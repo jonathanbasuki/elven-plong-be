@@ -20,7 +20,7 @@ from plong_elven.schemas.broadcasts import (
 from plong_elven.services.errors import AppError
 
 if TYPE_CHECKING:
-    from plong_elven.services.notification_service import NotificationService
+    from plong_elven.services.internal.notification_service import NotificationService
 
 
 class BroadcastService:

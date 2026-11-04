@@ -7,18 +7,22 @@ from fastapi import Depends, Header
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from plong_elven.adapters.apns_sender import ApnsPushSender
 from plong_elven.api.security import check_internal_key
 from plong_elven.db.models import User
 from plong_elven.db.session import SessionFactory, get_db
-from plong_elven.services.alert_service import AlertService, default_alert_rules
-from plong_elven.services.apns_sender import ApnsPushSender
 from plong_elven.services.auth_service import AuthService
 from plong_elven.services.broadcast_service import BroadcastService
 from plong_elven.services.camera_service import CameraService
 from plong_elven.services.crowd_service import CrowdService
 from plong_elven.services.errors import AppError
-from plong_elven.services.notification_service import NotificationService
+from plong_elven.services.internal.alert_service import (
+    AlertService,
+    default_alert_rules,
+)
+from plong_elven.services.internal.notification_service import NotificationService
 from plong_elven.services.ports import AlertRule, PushSender
+from plong_elven.services.zone_service import ZoneService
 from plong_elven.state.live_state import LiveState, get_live_state
 
 bearer = HTTPBearer(auto_error=False)
@@ -94,6 +98,13 @@ def get_crowd_service(
 ) -> CrowdService:
     """Return a CrowdService bound to the request session."""
     return CrowdService(session, live)
+
+
+def get_zone_service(
+    session: AsyncSession = Depends(get_db),  # noqa: B008
+) -> ZoneService:
+    """Return a ZoneService bound to the request session."""
+    return ZoneService(session)
 
 
 def require_role(*names: str) -> Callable[..., Awaitable[User]]:

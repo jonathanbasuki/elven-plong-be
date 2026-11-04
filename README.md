@@ -28,10 +28,13 @@ elven-plong-be/
 │   ├── api/                 # FastAPI app and one router per domain (api/routers/)
 │   ├── db/                  # SQLAlchemy models and session
 │   ├── schemas/             # Pydantic request/response DTOs (camelCase)
-│   ├── services/            # Business logic: auth, broadcasts, crowd, cameras, alerts, APNs
+│   ├── services/            # Business logic: auth, broadcasts, crowd, zones, cameras
+│   │   └── internal/        # Services with no route of their own: alerts, notifications
+│   ├── adapters/            # Talks to outside systems: APNs
+│   ├── helpers/             # Plain functions: zone-status classification
 │   ├── state/               # In-memory live counts and frames
 │   ├── cctv/                # Camera -> YOLO -> zone-count detection worker
-│   ├── common/              # Settings, zone-status classification, zones.json schema
+│   ├── common/              # Settings, zones.json schema
 │   └── __init__.py          # Package entry point
 ├── tests/                   # Automated tests
 ├── zones.example.json       # Template zone-polygon config, committed

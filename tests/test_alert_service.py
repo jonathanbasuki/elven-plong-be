@@ -5,12 +5,12 @@ import pytest
 from conftest import FakeSessionFactory
 
 from plong_elven.db.models import Zone
-from plong_elven.services.alert_service import (
+from plong_elven.services.internal.alert_service import (
     AlertService,
     StatusChangeRule,
     default_alert_rules,
 )
-from plong_elven.services.notification_service import NotificationService
+from plong_elven.services.internal.notification_service import NotificationService
 from plong_elven.services.ports import Alert
 from plong_elven.state.live_state import LiveState
 

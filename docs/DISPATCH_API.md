@@ -84,7 +84,7 @@ the dev page's manual count (`LiveState.counts` in
 `src/plong_elven/state/live_state.py`). It is kept in memory only, so it resets
 when the API restarts. `status` is computed on every request from that count
 and the zone's `warning_threshold` and `crowded_threshold` columns
-(`src/plong_elven/common/zone_status.py`):
+(`src/plong_elven/helpers/zone_status.py`):
 
 ```python
 if count < warning_threshold:

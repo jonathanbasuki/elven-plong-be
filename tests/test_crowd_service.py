@@ -10,7 +10,7 @@ from plong_elven.api.deps import get_push_sender, get_session_factory
 from plong_elven.api.main import app
 from plong_elven.db.models import Zone, ZoneCountHistory
 from plong_elven.db.session import get_db
-from plong_elven.schemas.zones import CrowdOut, HistoryBucketOut, ZoneOut
+from plong_elven.schemas.zones import CrowdOut, HistoryBucketOut
 from plong_elven.services.crowd_service import CrowdService
 from plong_elven.services.errors import AppError
 from plong_elven.state.live_state import LiveState, get_live_state
@@ -163,49 +163,6 @@ async def test_record_sample_flushes_old_bucket_to_history() -> None:
 
 
 @pytest.mark.asyncio
-async def test_list_zones_returns_zone_payloads() -> None:
-    class _MultiZoneSession:
-        async def scalars(self, stmt):
-            zones = [
-                Zone(
-                    zone_id="z1",
-                    name="A",
-                    map_image_url="u1",
-                    polygon=[],
-                    warning_threshold=5,
-                    crowded_threshold=10,
-                ),
-                Zone(
-                    zone_id="z2",
-                    name="B",
-                    map_image_url="u2",
-                    polygon=[],
-                    warning_threshold=3,
-                    crowded_threshold=6,
-                ),
-            ]
-            return type("R", (), {"all": lambda self: zones})()
-
-    live = LiveState()
-    live.counts["z1"] = 7
-    svc = CrowdService(_MultiZoneSession(), live)
-    result = await svc.list_zones()
-    assert [z.zoneId for z in result] == ["z1", "z2"]
-    assert result[0] == ZoneOut(zoneId="z1", name="A", mapImageUrl="u1", polygon=[])
-
-
-@pytest.mark.asyncio
-async def test_get_zone_returns_zone_without_live_fields() -> None:
-    live = LiveState()
-    live.counts["z1"] = 12
-    svc = CrowdService(_ZoneSession(), live)
-    result = await svc.get_zone("z1")
-    assert result == ZoneOut(
-        zoneId="z1", name="Main Lobby", mapImageUrl="u", polygon=[]
-    )
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("count", "status"),
     [(0, "safe"), (4, "safe"), (5, "warning"), (7, "warning"), (10, "crowded")],
@@ -228,15 +185,6 @@ async def test_crowd_before_first_detection_is_zero_safe_null() -> None:
 async def test_crowd_not_found_raises_app_error() -> None:
     with pytest.raises(AppError) as exc:
         await CrowdService(_ZoneSession(None), LiveState()).crowd("z9")
-    assert exc.value.status_code == 404
-    assert exc.value.code == "not_found"
-
-
-@pytest.mark.asyncio
-async def test_get_zone_not_found_raises_app_error() -> None:
-    svc = CrowdService(_ZoneSession(None), LiveState())
-    with pytest.raises(AppError) as exc:
-        await svc.get_zone("z9")
     assert exc.value.status_code == 404
     assert exc.value.code == "not_found"
 

@@ -1,6 +1,7 @@
-"""Crowd detection service: count ingestion, history buckets, zone and crowd reads.
+"""Crowd detection service: count ingestion, history buckets and crowd reads.
 
 Doesn't import FastAPI. Reads return Pydantic DTOs from schemas/zones.py.
+The zone catalogue (list, one zone) is in ZoneService.
 Alert logic is delegated to AlertService.
 """
 
@@ -10,11 +11,11 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from plong_elven.common.zone_status import classify
 from plong_elven.db.models import Zone, ZoneCountHistory
-from plong_elven.schemas.zones import CrowdOut, HistoryBucketOut, ZoneOut
-from plong_elven.services.alert_service import AlertService
+from plong_elven.helpers.zone_status import classify
+from plong_elven.schemas.zones import CrowdOut, HistoryBucketOut
 from plong_elven.services.errors import AppError
+from plong_elven.services.internal.alert_service import AlertService
 from plong_elven.state.live_state import Bucket, LiveState
 
 BUCKET_SECONDS = 300  # 5 minutes
@@ -27,7 +28,7 @@ def _bucket_start(now: datetime) -> datetime:
 
 
 class CrowdService:
-    """Service for crowd detection data: live counts, history buckets, zone queries.
+    """Service for crowd detection data: live counts, history buckets, crowd reads.
 
     Alert decisions are delegated to AlertService, which was added in Task 1.4.
     This service handles only the count management and persistence.
@@ -95,19 +96,6 @@ class CrowdService:
             await self.record_sample(zone_id, count, now)
             await alerts.on_count(zone, count, now)
 
-    async def list_zones(self) -> list[ZoneOut]:
-        """Return all zones ordered by zone_id, without live fields (§6.2)."""
-        zones = await self._session.scalars(select(Zone).order_by(Zone.zone_id))
-        return [_zone_out(zone) for zone in zones.all()]
-
-    async def get_zone(self, zone_id: str) -> ZoneOut:
-        """Return one zone.
-
-        Raises:
-            AppError(404, "not_found"): If the zone does not exist.
-        """
-        return _zone_out(await self._load_zone(zone_id))
-
     async def crowd(self, zone_id: str) -> CrowdOut:
         """Return the zone's live count and status.
 
@@ -150,15 +138,6 @@ class CrowdService:
         if zone is None:
             raise AppError(404, "not_found", f"zone {zone_id} not found")
         return zone
-
-
-def _zone_out(zone: Zone) -> ZoneOut:
-    return ZoneOut(
-        zoneId=zone.zone_id,
-        name=zone.name,
-        mapImageUrl=zone.map_image_url,
-        polygon=zone.polygon,
-    )
 
 
 async def process_counts_in_new_session(

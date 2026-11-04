@@ -15,9 +15,9 @@ escalation always still fires instantly.
 
 from datetime import datetime, timedelta
 
-from plong_elven.common.zone_status import classify
 from plong_elven.db.models import Zone
-from plong_elven.services.notification_service import NotificationService
+from plong_elven.helpers.zone_status import classify
+from plong_elven.services.internal.notification_service import NotificationService
 from plong_elven.services.ports import Alert, AlertRule
 from plong_elven.state.live_state import LiveState
 

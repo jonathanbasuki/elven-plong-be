@@ -24,13 +24,13 @@ from plong_elven.api.deps import (
 )
 from plong_elven.db.models import User
 from plong_elven.schemas.zones import CrowdOut, HistoryBucketOut
-from plong_elven.services.alert_service import AlertService
 from plong_elven.services.auth_service import AuthService
 from plong_elven.services.crowd_service import (
     CrowdService,
     process_counts_in_new_session,
 )
 from plong_elven.services.errors import AppError
+from plong_elven.services.internal.alert_service import AlertService
 from plong_elven.state.live_state import LiveState
 
 router = APIRouter(tags=["crowd"])

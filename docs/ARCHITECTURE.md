@@ -28,8 +28,14 @@ state (state/live_state.py)  in-memory LiveState singleton
   when `APP_ENV=dev`, and installs three exception handlers (`AppError`,
   `HTTPException`, `RequestValidationError`) that all return
   `{"error": {"code", "message"}}`.
-- Services: `AuthService`, `BroadcastService`, `CrowdService`, `CameraService`,
-  `AlertService`, `NotificationService`. `services/errors.py` defines `AppError(status_code, code, message)`.
+- Services (one per feature, in `services/`): `AuthService`, `BroadcastService`,
+  `CrowdService`, `ZoneService`, `CameraService`. `profile`, `staff` and `dev` have no
+  service of their own: they reuse `AuthService`, `BroadcastService` and others.
+- Internal services (no route of their own, in `services/internal/`): `AlertService`,
+  `NotificationService`. Only other services call them.
+- Adapters (talk to the outside world, in `adapters/`): `ApnsPushSender`.
+- Helpers (plain functions, no state, in `helpers/`): `zone_status.classify`.
+- `services/errors.py` defines `AppError(status_code, code, message)`.
 - `tests/test_broadcast_service.py` checks that `broadcast_service.py` does not
   contain the string `fastapi`.
 
@@ -37,8 +43,8 @@ state (state/live_state.py)  in-memory LiveState singleton
 
 | Protocol | Method | Implementations |
 |---|---|---|
-| `PushSender` | `async send(tokens, title, body)`; must log, never raise | `ApnsPushSender` (`services/apns_sender.py`, APNs HTTP/2 with an ES256 `.p8` JWT cached 50 min); `FakePushSender` in `tests/conftest.py` |
-| `AlertRule` | `evaluate(zone, count, previous_status) -> Alert \| None` | `StatusChangeRule` (`services/alert_service.py`) |
+| `PushSender` | `async send(tokens, title, body)`; must log, never raise | `ApnsPushSender` (`adapters/apns_sender.py`, APNs HTTP/2 with an ES256 `.p8` JWT cached 50 min); `FakePushSender` in `tests/conftest.py` |
+| `AlertRule` | `evaluate(zone, count, previous_status) -> Alert \| None` | `StatusChangeRule` (`services/internal/alert_service.py`) |
 
 `Alert` is a frozen dataclass: `key`, `cooldown`, `audience_role`, `title`, `body`.
 
@@ -51,7 +57,7 @@ has not passed (`LiveState.last_alert_sent_at`), and calls
 session, selects `push_token` of every user with that role, and calls the
 `PushSender`.
 
-Status is `common/zone_status.classify()`: `safe` below `warning_threshold`,
+Status is `helpers/zone_status.classify()`: `safe` below `warning_threshold`,
 `warning` below `crowded_threshold`, else `crowded`.
 
 ### LiveState (`state/live_state.py`)
@@ -144,11 +150,14 @@ src/plong_elven/
     deps.py            DI: current user, roles, internal key, services
     security.py        X-Internal-Api-Key check
     routers/           auth, profile, zones, crowd (+WS), broadcasts, staff, cameras, dev
-  services/            auth, broadcast, crowd, camera, alert, notification, apns_sender, ports, errors
+  services/            auth, broadcast, crowd, zone, camera, ports, errors
+    internal/          alert, notification (no route of their own)
+  adapters/            apns_sender (talks to Apple)
+  helpers/             zone_status.classify (plain functions)
   schemas/             Pydantic request/response models (camelCase)
   state/live_state.py  in-memory LiveState
   db/                  base, models (roles, users, refresh_tokens, zones, zone_count_history, broadcasts, broadcast_responses), session
-  common/              settings, zones.json load/save/validate, zone_status.classify
+  common/              settings, zones.json load/save/validate
   cctv/                worker: loop (CLI), detector (YOLO), zones (pixel math), overlay, client, uploader
 alembic/versions/      5 migrations
 scripts/               create_user, seed_dispatch, doctor, generate_mediamtx_config, benchmark_cctv

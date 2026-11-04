@@ -3,7 +3,7 @@
 import pytest
 from conftest import FakeSessionFactory
 
-from plong_elven.services.notification_service import NotificationService
+from plong_elven.services.internal.notification_service import NotificationService
 
 
 class _TokenSession:

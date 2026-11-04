@@ -3,7 +3,7 @@
 Real push notifications to staff and manager iPhones, sent directly from this
 backend to Apple's APNs HTTP/2 provider API using a token-based `.p8` Auth
 Key — no certificates to renew, no third-party push service. Implementation:
-`src/plong_elven/services/apns_sender.py`.
+`src/plong_elven/adapters/apns_sender.py`.
 
 This is optional: without it configured, the app still works end to end —
 pushes are just skipped (logged as a warning), nothing breaks.
@@ -13,10 +13,10 @@ pushes are just skipped (logged as a warning), nothing breaks.
 | Trigger | Recipients | Code |
 |---|---|---|
 | An `ops_manager` creates a broadcast (`POST /api/v1/broadcasts`) | every `floor_staff` user with a non-null `push_token` | `BroadcastService.create` in `services/broadcast_service.py` |
-| A zone's status newly crosses into `warning` or `crowded` | every `ops_manager` user with a non-null `push_token` | `AlertService.on_count` in `services/alert_service.py` |
+| A zone's status newly crosses into `warning` or `crowded` | every `ops_manager` user with a non-null `push_token` | `AlertService.on_count` in `services/internal/alert_service.py` |
 
 `admin` users never receive pushes. Recipients are selected by role in
-`NotificationService.notify_role` (`services/notification_service.py`). Both
+`NotificationService.notify_role` (`services/internal/notification_service.py`). Both
 pushes run as FastAPI background tasks after the response, so a push failure
 never changes the API response.
 
@@ -34,7 +34,7 @@ cooldown per zone; a change to a different status (for example `warning` to
 (`LiveState.last_status` and `last_alert_sent_at` in `state/live_state.py`), so
 it resets on API restart.
 
-Alert copy (`default_alert_rules` in `services/alert_service.py`) — crowded is
+Alert copy (`default_alert_rules` in `services/internal/alert_service.py`) — crowded is
 intentionally more urgent than warning:
 
 | Status | Title | Body |

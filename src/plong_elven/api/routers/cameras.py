@@ -19,9 +19,9 @@ from plong_elven.api.deps import (
 from plong_elven.api.routers.crowd import ingest_counts
 from plong_elven.schemas.common import CAMERA_ID_PATTERN
 from plong_elven.schemas.detections import DetectionIn
-from plong_elven.services.alert_service import AlertService
 from plong_elven.services.camera_service import CameraService
 from plong_elven.services.errors import AppError
+from plong_elven.services.internal.alert_service import AlertService
 from plong_elven.state.live_state import LiveState, get_live_state
 
 MAX_FRAME_BYTES = 5 * 1024 * 1024

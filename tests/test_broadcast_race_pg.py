@@ -17,7 +17,7 @@ from sqlalchemy.pool import NullPool
 from plong_elven.db.models import Broadcast, BroadcastResponse, Role, User, Zone
 from plong_elven.services.broadcast_service import BroadcastService
 from plong_elven.services.errors import AppError
-from plong_elven.services.notification_service import NotificationService
+from plong_elven.services.internal.notification_service import NotificationService
 
 
 @pytest.mark.asyncio

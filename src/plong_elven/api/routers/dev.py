@@ -41,10 +41,10 @@ from plong_elven.schemas.common import CAMERA_ID_PATTERN
 from plong_elven.schemas.detections import DetectionIn
 from plong_elven.schemas.layout import ZonesIn
 from plong_elven.schemas.tickets import TicketOut, TicketRequest
-from plong_elven.services.alert_service import AlertService
 from plong_elven.services.auth_service import AuthService
 from plong_elven.services.camera_service import CameraService
 from plong_elven.services.errors import AppError
+from plong_elven.services.internal.alert_service import AlertService
 from plong_elven.state.live_state import LiveState, get_live_state
 
 BOUNDARY = b"frame"

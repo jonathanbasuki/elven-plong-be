@@ -108,8 +108,11 @@ Steps: `uv python install 3.12`, `uv sync --locked --group api --group dev`,
 
 - Routers handle HTTP only; rules live in services, which raise `AppError` and do not
   import `fastapi` (checked for `broadcast_service.py` by a test). The same holds for
-  `state/` and `common/`.
+  `state/`, `adapters/`, `helpers/` and `common/`.
 - New dependencies are wired in `api/deps.py` so tests can override them.
+- A service that has its own route is named after it (`zones.py` -> `zone_service.py`).
+  A service with no route goes in `services/internal/`. Code that talks to an outside
+  system goes in `adapters/`. Plain functions go in `helpers/`.
 - New alert type: write a class that implements `AlertRule.evaluate()` and add it to
   `default_alert_rules()`; do not change `AlertService`.
 - New push transport: implement `PushSender.send()` (log failures, never raise) and
