@@ -10,8 +10,12 @@ CCTV -> CCTV worker -> Plong Elven API -> browser
 ```
 
 The worker reads frames, runs the detection model, draws the annotations, and
-posts the resulting JPEG frames to the API. The API serves those frames through
-`GET /stream/{camera_id}`.
+posts counts and JPEG frames to the worker routes
+`POST /internal/v1/cameras/{cameraId}/detections`, `.../frames` and
+`.../frames/raw`, with the `X-Internal-Api-Key` header. The detections body is
+`{"counts": {"z2": 3}}`; the camera id is in the path. The API serves the
+annotated frames through `GET /api/v1/cameras/{cameraId}/stream?ticket=...`,
+which needs a 60-second admin ticket (see section 8).
 
 This guide runs the worker with raw `uv run` commands to show every flag
 explicitly. Day to day, prefer the Makefile shortcuts instead:
@@ -20,14 +24,15 @@ or `make cctv-relay` for an RTSP camera behind MediaMTX — see
 [SETUP_HLS.md](SETUP_HLS.md), which also covers the important gotcha that only
 one RTSP client can read the camera at a time. To draw real zone polygons
 instead of using the flat `zones.example.json` template below, use the
-in-browser editor at `GET /ui/{camera_id}` — see the main
-[README](../README.md), step 11.
+in-browser editor at `GET /dev/cameras/{cameraId}` (`APP_ENV=dev` only, admin
+login) — see the main [README](../README.md), step 11.
 
 ## Requirements
 
 - Git access to the repository
 - Python 3.12 managed by `uv`
-- Docker or OrbStack is optional for this guide
+- Docker or OrbStack for PostgreSQL (README steps 5–6), needed to log in and
+  view the stream
 - A webcam, video file, or RTSP-capable CCTV camera
 - macOS on Apple Silicon is recommended for MPS acceleration
 
@@ -76,12 +81,14 @@ CAMERA_ID=default
 RTSP_URL=
 YOLO_DEVICE=mps
 DRY_RUN=0
-INTERNAL_API_KEY=
+INTERNAL_API_KEY=<generated-value>
 ```
 
-`INTERNAL_API_KEY` can remain empty for local testing. If it is set, the same
-value must be available to both the API and the worker. Never commit `.env` or
-camera credentials.
+`INTERNAL_API_KEY` must not be blank: a blank key makes the API reject every
+worker call with `401`, even with `APP_ENV=dev`. Generate one with
+`openssl rand -hex 32` (outside `APP_ENV=dev` the API refuses to start with a
+key shorter than 32 characters). The same value must be available to both the
+API and the worker. Never commit `.env` or camera credentials.
 
 ## 3. Install dependencies
 
@@ -201,34 +208,46 @@ worker prints detection counts but does not post frames to the API.
 
 ## 8. View the CCTV stream
 
-After the worker has successfully read and posted frames, open this URL:
+After the worker has successfully read and posted frames, the easiest viewer
+is the dev page (API running with `APP_ENV=dev`, admin login):
 
 ```text
-http://127.0.0.1:8080/stream/default
+http://127.0.0.1:8080/dev/cameras/default
 ```
+
+It mints a ticket and loads the stream for you. To open the stream directly,
+log in as an admin, mint a ticket for the camera, and open the URL within 60
+seconds:
+
+```bash
+ADMIN_TOKEN=$(curl -s -X POST http://127.0.0.1:8080/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email": "admin@plongelven.io", "password": "password123"}' \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["accessToken"])')
+TICKET=$(curl -s -X POST http://127.0.0.1:8080/api/v1/tickets \
+  -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
+  -d '{"scope": "stream:default"}' \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["ticket"])')
+echo "http://127.0.0.1:8080/api/v1/cameras/default/stream?ticket=$TICKET"
+```
+
+The ticket is checked only when the stream opens, so an open stream keeps
+running after the 60 seconds; reloading needs a new ticket. The ticket appears
+in the server access log because it is in the URL.
 
 The stream is an MJPEG stream, so the browser may keep loading indefinitely.
 That is expected. The annotated video should appear once the first frame has
 arrived.
 
-If the worker uses another camera ID, use the same ID in the URL:
-
-```text
-http://127.0.0.1:8080/stream/<camera-id>
-```
-
-For example, a worker started with `--camera-id cam1` must be viewed at:
-
-```text
-http://127.0.0.1:8080/stream/cam1
-```
+If the worker uses another camera ID, use the same ID in the scope and the
+URL. For example, a worker started with `--camera-id cam1` needs a
+`stream:cam1` ticket and is viewed at
+`/api/v1/cameras/cam1/stream?ticket=...`. A ticket for one camera does not
+work for another.
 
 If the API is running on another Mac and the browser is on a different device,
-replace `127.0.0.1` with the server Mac's LAN IP address, for example:
-
-```text
-http://192.168.1.20:8080/stream/default
-```
+replace `127.0.0.1` with the server Mac's LAN IP address, for example
+`http://192.168.1.20:8080/dev/cameras/default`.
 
 ## Troubleshooting
 
@@ -239,6 +258,8 @@ The API has not received a frame for camera ID `default`. Check that:
 - The worker is running.
 - The worker is not using `--dry-run`.
 - The worker's camera ID matches the URL camera ID.
+- `GET /api/v1/cameras/{cameraId}/stream` and `.../snapshot` return this `404`
+  until the first frame arrives.
 - The webcam, video file, or RTSP source can be opened.
 - The worker is using the correct `API_BASE_URL`.
 
@@ -249,8 +270,15 @@ the source path, camera permissions, IP address, credentials, and RTSP path.
 
 ### `401 invalid internal api key`
 
-The API and worker are using different `INTERNAL_API_KEY` values. For local
-testing, leave the value empty in `.env`, restart both processes, and try again.
+The API and worker are using different `INTERNAL_API_KEY` values, or the key
+is blank (a blank key rejects every worker call). Set the same non-blank value
+for both in `.env`, restart both processes, and try again.
+
+### `401 unauthenticated` on the stream
+
+The `?ticket=` is missing, older than 60 seconds, or was minted for another
+camera or for `crowd:live`. Mint a new `stream:<cameraId>` ticket. An access
+token in the `Authorization` header does not work on the stream.
 
 ### The browser keeps loading with no image
 
@@ -258,7 +286,7 @@ An MJPEG endpoint remains open by design. Check the worker terminal for source
 or HTTP errors. You can also inspect the response headers:
 
 ```bash
-curl -v --max-time 5 http://127.0.0.1:8080/stream/default
+curl -v --max-time 5 "http://127.0.0.1:8080/api/v1/cameras/default/stream?ticket=$TICKET"
 ```
 
 Once frames are available, the response should be `200 OK` with a content type
@@ -270,5 +298,6 @@ multipart/x-mixed-replace; boundary=frame
 
 ## Stop the local processes
 
-Press `Ctrl+C` in the worker terminal and the API terminal. The database is not
-required for this CCTV stream test.
+Press `Ctrl+C` in the worker terminal and the API terminal. Viewing the stream
+needs the database, because the admin login and the ticket check read the user
+from PostgreSQL; stop it with `make db-down` when done.

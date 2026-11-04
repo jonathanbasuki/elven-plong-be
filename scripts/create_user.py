@@ -39,7 +39,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Create a Plong Elven user")
     parser.add_argument("--email", required=True)
     parser.add_argument("--full-name", required=True)
-    parser.add_argument("--role", choices=("floor_staff", "ops_manager"), required=True)
+    parser.add_argument(
+        "--role", choices=("floor_staff", "ops_manager", "admin"), required=True
+    )
     args = parser.parse_args()
     asyncio.run(create_user(args.email, args.full_name, args.role))
 

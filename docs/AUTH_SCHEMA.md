@@ -140,10 +140,13 @@ The schema supports these initial endpoints:
 
 ```text
 POST /api/v1/auth/login
-GET  /api/v1/auth/profile
+GET  /api/v1/me
 POST /api/v1/auth/refresh
 POST /api/v1/auth/logout
 ```
+
+(`GET /api/v1/me` replaced the original profile route; see
+[API_V1_MIGRATION.md](API_V1_MIGRATION.md).)
 
 Before using the auth endpoints, set a random JWT secret in `.env`:
 
@@ -160,6 +163,14 @@ The API rejects missing or shorter-than-32-character JWT secrets.
 Role authorization is intentionally out of scope for this first migration, but
 `role_id` is included so the login response and future authorization checks do
 not require a schema change.
+
+## Later addition: `admin` role
+
+Migration `a1b2c3d4e5f6_add_admin_role` inserts role `id=3, name='admin'`
+(after `1 floor_staff` and `2 ops_manager`). Its downgrade deletes the row and
+fails while admin users exist (`ON DELETE RESTRICT`). Roles do not inherit:
+`admin` may mint tickets and use the camera routes, and has no dispatch
+powers. Run `uv run alembic upgrade head` to apply it.
 
 ## Later addition: dispatch fields on `users`
 
@@ -179,7 +190,8 @@ staff identity or id. `broadcast_responses.staff_id` references `users.id`.
 This removed an earlier standalone `staff` table that duplicated the same
 people with a second primary key.
 
-`push_token` is written by `POST /api/v1/auth/push-token` and read by the
+`push_token` is written by `PUT /api/v1/me/push-token`, cleared by
+`POST /api/v1/auth/logout`, and read by the
 push-notification sender for both roles — see
 [PUSH_NOTIFICATIONS.md](PUSH_NOTIFICATIONS.md).
 

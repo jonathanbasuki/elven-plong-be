@@ -9,7 +9,9 @@ Tapo camera --RTSP--> MediaMTX --HLS--> iPhone / iOS AVPlayer
                        +--RTSP--> CCTV worker --> API detections
 ```
 
-MediaMTX serves the camera's original video. The API's `/stream/default` is a
+MediaMTX serves the camera's original video. The API's
+`/api/v1/cameras/default/stream` (admin ticket, see
+[SETUP_CCTV.md](SETUP_CCTV.md) section 8) is a
 separate annotated preview produced by the worker; HLS does not depend on the
 API being online.
 
@@ -158,10 +160,13 @@ The worker reads the RTSP relay from MediaMTX and posts detection data and
 annotated/raw preview frames to the API. The HLS URL remains available if the
 API is stopped, as long as MediaMTX and the CCTV camera remain online.
 
-The annotated API preview is separate:
+The annotated API preview is separate. Open it from the dev page
+(`APP_ENV=dev`, admin login), or with a `stream:default` ticket as in
+[SETUP_CCTV.md](SETUP_CCTV.md) section 8:
 
 ```text
-http://127.0.0.1:8080/stream/default
+http://127.0.0.1:8080/dev/cameras/default
+http://127.0.0.1:8080/api/v1/cameras/default/stream?ticket=<ticket>
 ```
 
 ## Security notes

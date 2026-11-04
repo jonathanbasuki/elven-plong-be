@@ -7,9 +7,25 @@ on:
 jobs:
   checks:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: plong_elven
+          POSTGRES_PASSWORD: ci-password
+          POSTGRES_DB: plong_elven
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U plong_elven"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     env:
       DATABASE_URL: postgresql+asyncpg://plong_elven:ci-password@127.0.0.1:5432/plong_elven
       JWT_SECRET: ci-only-secret
+      REQUIRE_PG: "1"
+      APP_ENV: dev
     steps:
       - uses: actions/checkout@v4
 
@@ -21,4 +37,6 @@ jobs:
       - run: uv sync --locked --group api --group dev
       - run: uv run ruff check .
       - run: uv run ruff format --check .
+      - run: uv run alembic upgrade head
+      - run: uv run alembic downgrade -1 && uv run alembic upgrade head
       - run: uv run pytest

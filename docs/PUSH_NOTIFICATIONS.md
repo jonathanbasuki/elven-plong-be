@@ -3,7 +3,7 @@
 Real push notifications to staff and manager iPhones, sent directly from this
 backend to Apple's APNs HTTP/2 provider API using a token-based `.p8` Auth
 Key — no certificates to renew, no third-party push service. Implementation:
-`src/plong_elven/api/apns.py`.
+`src/plong_elven/services/apns_sender.py`.
 
 This is optional: without it configured, the app still works end to end —
 pushes are just skipped (logged as a warning), nothing breaks.
@@ -12,16 +12,18 @@ pushes are just skipped (logged as a warning), nothing breaks.
 
 | Trigger | Recipients | Code |
 |---|---|---|
-| Manager creates a broadcast | every `floor_staff` with a registered device token | `create_broadcast` in `dispatch.py` |
-| A zone's status newly crosses into `warning` or `crowded` | every `ops_manager` with a registered device token | `_process_zone_update` in `detections.py` |
+| Manager creates a broadcast | every `floor_staff` with a registered device token | `BroadcastService.create` in `services/broadcast_service.py` |
+| A zone's status newly crosses into `warning` or `crowded` | every `ops_manager` with a registered device token | `AlertService.on_count` in `services/alert_service.py` |
 
 The status-change push only fires on the transition into `warning`/`crowded`
-— not on every `POST /detections` while the zone stays busy (the worker
-posts roughly once a second), and not on the way back down to `safe`. State
-is tracked in-memory per zone (`_last_status`), so it resets on API restart.
+— not on every worker post to `POST /internal/v1/cameras/{cameraId}/detections`
+while the zone stays busy (the worker posts roughly once a second), and not on
+the way back down to `safe`. Each status also has a 5-minute cooldown per zone.
+State is tracked in memory per zone (`LiveState.last_status` and
+`last_alert_sent_at` in `state/live_state.py`), so it resets on API restart.
 
-Alert copy (`_ALERT_MESSAGES` in `detections.py`) — crowded is intentionally
-more urgent than warning:
+Alert copy (`default_alert_rules` in `services/alert_service.py`) — crowded is
+intentionally more urgent than warning:
 
 | Status | Title | Body |
 |---|---|---|
@@ -82,7 +84,7 @@ Real push delivery only works on a **physical device**, not the simulator.
 
 Log in on a device (the app requests notification permission and registers
 its device token automatically — see `PushNotifications.swift` and
-`POST /api/v1/auth/push-token` in the frontend/backend respectively), then
+`PUT /api/v1/me/push-token` in the frontend/backend respectively), then
 check it reached the database:
 
 ```bash
@@ -91,11 +93,11 @@ docker compose --env-file .env -f infra/docker-compose.yml exec -T db \
   -c "SELECT email, (push_token IS NOT NULL) AS has_push_token FROM users;"
 ```
 
-Trigger a real push: create a broadcast (`POST /api/v1/dispatch/broadcasts`,
+Trigger a real push: create a broadcast (`POST /api/v1/broadcasts`,
 see [DISPATCH_API.md](DISPATCH_API.md)) as a manager with at least one
 `floor_staff` device registered, or drive a zone's count into `warning`/
-`crowded` via the in-browser **Dev Tools** tab (see
-[SETUP_CCTV.md](SETUP_CCTV.md)) with a manager device registered.
+`crowded` via the **Dev Tools** tab of the dev page (`APP_ENV=dev`, admin
+login; see [README](../README.md) step 11) with a manager device registered.
 
 ## Troubleshooting
 
