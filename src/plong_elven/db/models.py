@@ -159,7 +159,8 @@ class Broadcast(Base):
     __tablename__ = "broadcasts"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('open', 'closed', 'finished')", name="broadcast_status_check"
+            "status IN ('open', 'in_progress', 'complete', 'finished', 'canceled')",
+            name="broadcast_status_check",
         ),
         CheckConstraint("staff_needed > 0", name="broadcast_staff_needed_check"),
         Index(
@@ -187,11 +188,35 @@ class Broadcast(Base):
         DateTime(timezone=True), nullable=False
     )
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    monitoring_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
 
     zone: Mapped[Zone] = relationship(back_populates="broadcasts")
     responses: Mapped[list["BroadcastResponse"]] = relationship(
         back_populates="broadcast", cascade="all, delete-orphan"
     )
+    count_samples: Mapped[list["BroadcastCountSample"]] = relationship(
+        back_populates="broadcast", cascade="all, delete-orphan"
+    )
+
+
+class BroadcastCountSample(Base):
+    __tablename__ = "broadcast_count_samples"
+    __table_args__ = (
+        Index(
+            "ix_broadcast_count_samples_broadcast_time", "broadcast_id", "observed_at"
+        ),
+    )
+    sample_id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    broadcast_id: Mapped[UUID] = mapped_column(
+        ForeignKey("broadcasts.broadcast_id", ondelete="CASCADE"), nullable=False
+    )
+    count: Mapped[int] = mapped_column(Integer, nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    broadcast: Mapped[Broadcast] = relationship(back_populates="count_samples")
 
 
 class BroadcastResponse(Base):
@@ -215,3 +240,41 @@ class BroadcastResponse(Base):
 
     broadcast: Mapped[Broadcast] = relationship(back_populates="responses")
     staff: Mapped[User] = relationship(back_populates="broadcast_responses")
+
+
+class Snapshot(Base):
+    __tablename__ = "snapshots"
+    __table_args__ = (
+        Index("ix_snapshots_broadcast_id", "broadcast_id"),
+        Index(
+            "uq_snapshots_one_before",
+            "broadcast_id",
+            unique=True,
+            postgresql_where=text("kind = 'before'"),
+        ),
+        Index(
+            "uq_snapshots_one_after",
+            "broadcast_id",
+            unique=True,
+            postgresql_where=text("kind = 'after'"),
+        ),
+        CheckConstraint("kind IN ('before', 'after')", name="snapshots_kind_check"),
+    )
+
+    snapshot_id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    broadcast_id: Mapped[UUID] = mapped_column(
+        ForeignKey("broadcasts.broadcast_id", ondelete="CASCADE"), nullable=False
+    )
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    captured_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    object_key: Mapped[str | None] = mapped_column(String)
+    public_url: Mapped[str | None] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    error: Mapped[str | None] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    broadcast: Mapped[Broadcast] = relationship()

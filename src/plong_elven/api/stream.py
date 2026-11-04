@@ -23,6 +23,11 @@ BOUNDARY = b"frame"
 STREAM_INTERVAL = 0.2  # seconds between re-sent frames to each viewer
 
 
+def latest_annotated_frame(camera_id: str) -> bytes | None:
+    """Return the latest annotated frame for internal snapshot jobs."""
+    return _frames.get(camera_id)
+
+
 @router.post("/frames/{camera_id}")
 async def post_frame(
     camera_id: str,

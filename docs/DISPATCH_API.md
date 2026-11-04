@@ -96,8 +96,8 @@ A broadcast is a manager's call for staff in one zone. One zone can have at
 most one `open` broadcast at a time (enforced by a partial unique index).
 
 ```text
-create (ops_manager) ──> open ──> staff respond (floor_staff) ──┬──> expires after 20s, no one accepted ──> closed
-                                                                  └──> accepted staff complete ──> manager finishes ──> finished
+create ──> open ──> first acceptance ──> in_progress ──> complete ──> finished
+  └──> expires or manager cancels ──> canceled; crowded monitoring returns to in_progress
 ```
 
 ### `POST /api/v1/dispatch/broadcasts` — requires `ops_manager`
@@ -116,7 +116,7 @@ creation (hardcoded; see `create_broadcast` in `src/plong_elven/api/dispatch.py`
 ### `GET /api/v1/dispatch/broadcasts/current?zoneId={zoneId}`
 
 Latest broadcast for a zone, open or not. Lazily flips `status` from `open`
-to `closed` on read if the 20-second window has passed. `404 not_found` if
+to `canceled` on read if the 20-second window has passed. `404 not_found` if
 the zone has never had a broadcast. Both the manager and staff apps poll this
 every ~1 second.
 
@@ -130,12 +130,18 @@ repeat call from the same user returns `200` without creating a duplicate row.
 ### `POST /api/v1/dispatch/broadcasts/{broadcastId}/complete`
 
 The calling user marks their own acceptance as done. `403 not_your_response`
-if they never accepted this broadcast.
+if they never accepted this broadcast. The last accepted staff member changes
+the broadcast to `complete`, then monitoring starts after five minutes. It
+samples once per second for five minutes; a crowded average resets the window,
+otherwise the latest annotated `cam1` frame is captured and the status becomes
+`finished`. Snapshot failures are non-fatal. The monitor is an in-process task,
+so it is lost on restart and is not shared across workers.
 
 ### `POST /api/v1/dispatch/broadcasts/{broadcastId}/finish` — requires `ops_manager`
 
-Closes out the broadcast. `409 not_all_done` unless every accepted staff
-member has completed.
+Compatibility endpoint. It returns `409 not_all_done` unless every accepted
+staff member has completed, but does not bypass monitoring or trigger the after
+snapshot.
 
 ## Staff lookup
 

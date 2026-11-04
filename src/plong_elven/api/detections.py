@@ -22,7 +22,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from plong_elven.api.apns import send_push
 from plong_elven.api.security import check_internal_key
 from plong_elven.common.zone_status import classify
-from plong_elven.db.models import Role, User, Zone, ZoneCountHistory
+from plong_elven.db.models import (
+    Broadcast,
+    BroadcastCountSample,
+    Role,
+    User,
+    Zone,
+    ZoneCountHistory,
+)
 from plong_elven.db.session import get_db
 
 router = APIRouter(tags=["detections"])
@@ -126,6 +133,20 @@ async def _process_zone_update(session: AsyncSession, counts: dict[str, int]) ->
             continue
 
         await _record_count_sample(session, zone_id, count, now)
+        active = await session.scalars(
+            select(Broadcast).where(
+                Broadcast.zone_id == zone_id,
+                Broadcast.status == "complete",
+                Broadcast.monitoring_started_at.is_not(None),
+                Broadcast.monitoring_started_at <= now,
+            )
+        )
+        for broadcast in active.all():
+            session.add(
+                BroadcastCountSample(
+                    broadcast_id=broadcast.broadcast_id, count=count, observed_at=now
+                )
+            )
 
         status = classify(count, zone.warning_threshold, zone.crowded_threshold)
         previous = _last_status.get(zone_id)

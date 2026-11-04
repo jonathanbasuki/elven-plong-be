@@ -1,7 +1,8 @@
+import asyncio
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -10,18 +11,24 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from plong_elven.api.apns import send_push
 from plong_elven.api.auth import get_current_user
 from plong_elven.api.detections import latest_counts
+from plong_elven.api.stream import latest_annotated_frame
 from plong_elven.common.zone_status import classify
 from plong_elven.db.models import (
     Broadcast,
+    BroadcastCountSample,
     BroadcastResponse,
     Role,
     User,
     Zone,
     ZoneCountHistory,
 )
-from plong_elven.db.session import get_db
+from plong_elven.db.session import SessionFactory, get_db
+from plong_elven.snapshots import process_snapshot
 
 router = APIRouter(prefix="/api/v1/dispatch", tags=["dispatch"])
+MONITOR_WINDOW_SECONDS = 300
+MONITOR_SAMPLE_INTERVAL_SECONDS = 1
+_monitoring_broadcasts: set[UUID] = set()
 
 
 def _require_role(user: User, role: str) -> None:
@@ -54,9 +61,66 @@ async def _find_broadcast(session: AsyncSession, broadcast_id: UUID) -> Broadcas
 
 async def _close_if_expired(broadcast: Broadcast, now: datetime) -> bool:
     if broadcast.status == "open" and now > broadcast.expires_at:
-        broadcast.status = "closed"
+        broadcast.status = "canceled"
         return True
     return False
+
+
+async def _monitor_broadcast(broadcast_id: UUID) -> None:
+    """Finish after a quiet window; this task is intentionally in-process."""
+    try:
+        while True:
+            samples: list[int] = []
+            end = asyncio.get_running_loop().time() + MONITOR_WINDOW_SECONDS
+            while asyncio.get_running_loop().time() < end:
+                async with SessionFactory() as session:
+                    broadcast = await session.get(Broadcast, broadcast_id)
+                    if broadcast is None or broadcast.status != "complete":
+                        return
+                    samples.append(latest_counts.get(broadcast.zone_id, 0))
+                await asyncio.sleep(MONITOR_SAMPLE_INTERVAL_SECONDS)
+            async with SessionFactory() as session:
+                broadcast = await session.get(Broadcast, broadcast_id)
+                if broadcast is None or broadcast.status != "complete":
+                    return
+                zone = await session.get(Zone, broadcast.zone_id)
+                if zone is None:
+                    return
+                if samples and sum(samples) / len(samples) > zone.crowded_threshold:
+                    responses = await session.scalars(
+                        select(BroadcastResponse).where(
+                            BroadcastResponse.broadcast_id == broadcast_id
+                        )
+                    )
+                    for response in responses.all():
+                        response.completed_at = None
+                        staff = await session.get(User, response.staff_id)
+                        if staff is not None:
+                            staff.status = "delegating"
+                    broadcast.status = "in_progress"
+                    await session.commit()
+                    continue
+                finished_at = datetime.now(UTC)
+                broadcast.status = "finished"
+                broadcast.finished_at = finished_at
+                await session.commit()
+                asyncio.create_task(
+                    process_snapshot(
+                        str(broadcast_id),
+                        "after",
+                        finished_at,
+                        latest_annotated_frame("cam1"),
+                    )
+                )
+                return
+    finally:
+        _monitoring_broadcasts.discard(broadcast_id)
+
+
+def _schedule_monitor(broadcast_id: UUID) -> None:
+    if broadcast_id not in _monitoring_broadcasts:
+        _monitoring_broadcasts.add(broadcast_id)
+        asyncio.create_task(_monitor_broadcast(broadcast_id))
 
 
 async def _broadcast_response(session: AsyncSession, broadcast: Broadcast) -> dict:
@@ -247,6 +311,13 @@ async def create_broadcast(
         "New broadcast",
         f"Crowd control needed in {zone.name} — tap to accept",
     )
+    background_tasks.add_task(
+        process_snapshot,
+        str(broadcast.broadcast_id),
+        "before",
+        now,
+        latest_annotated_frame("cam1"),
+    )
 
     return await _broadcast_response(session, broadcast)
 
@@ -286,6 +357,7 @@ async def respond_to_broadcast(
 
     session.add(BroadcastResponse(broadcast_id=broadcastId, staff_id=user.id))
     user.status = "delegating"
+    broadcast.status = "in_progress"
     await session.commit()
     return {"status": "ok"}
 
@@ -296,7 +368,7 @@ async def complete_broadcast(
     session: AsyncSession = Depends(get_db),  # noqa: B008
     user: User = Depends(get_current_user),  # noqa: B008
 ) -> dict[str, str]:
-    await _find_broadcast(session, broadcastId)
+    broadcast = await _find_broadcast(session, broadcastId)
     response = await session.get(
         BroadcastResponse, {"broadcast_id": broadcastId, "staff_id": user.id}
     )
@@ -309,6 +381,26 @@ async def complete_broadcast(
     if response.completed_at is None:
         response.completed_at = datetime.now(UTC)
     user.status = "idle"
+    completed_count = await session.scalar(
+        select(func.count())
+        .select_from(BroadcastResponse)
+        .where(
+            BroadcastResponse.broadcast_id == broadcastId,
+            BroadcastResponse.completed_at.is_not(None),
+        )
+    )
+    accepted_count = await session.scalar(
+        select(func.count())
+        .select_from(BroadcastResponse)
+        .where(BroadcastResponse.broadcast_id == broadcastId)
+    )
+    if (
+        accepted_count
+        and completed_count == accepted_count
+        and broadcast.status == "in_progress"
+    ):
+        broadcast.status = "complete"
+        broadcast.monitoring_started_at = datetime.now(UTC)
     await session.commit()
     return {"status": "ok"}
 
@@ -316,6 +408,7 @@ async def complete_broadcast(
 @router.post("/broadcasts/{broadcastId}/finish")
 async def finish_broadcast(
     broadcastId: UUID,
+    _background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_db),  # noqa: B008
     user: User = Depends(get_current_user),  # noqa: B008
 ) -> dict:
@@ -342,12 +435,91 @@ async def finish_broadcast(
             "not_all_done",
             "All accepted staff members must complete before finishing.",
         )
-    if broadcast.status != "finished":
-        broadcast.status = "finished"
-        broadcast.finished_at = datetime.now(UTC)
+    if broadcast.status == "in_progress":
+        broadcast.status = "complete"
+        broadcast.monitoring_started_at = datetime.now(UTC)
         await session.commit()
     return {
         "broadcastId": str(broadcast.broadcast_id),
-        "status": "finished",
+        "status": broadcast.status,
         "finishedAt": broadcast.finished_at,
     }
+
+
+@router.post("/internal/process-broadcast-monitor")
+async def process_broadcast_monitor(
+    background_tasks: BackgroundTasks,
+    x_internal_job_secret: str | None = Header(default=None),
+    session: AsyncSession = Depends(get_db),  # noqa: B008
+) -> dict:
+    from fastapi import HTTPException
+
+    from plong_elven.common.settings import get_settings
+
+    if (
+        not get_settings().internal_job_secret
+        or x_internal_job_secret != get_settings().internal_job_secret
+    ):
+        raise HTTPException(status_code=401, detail="invalid internal job secret")
+    cutoff = datetime.now(UTC) - timedelta(minutes=5)
+    rows = await session.scalars(
+        select(Broadcast).where(
+            Broadcast.status == "complete", Broadcast.monitoring_started_at <= cutoff
+        )
+    )
+    processed = 0
+    for broadcast in rows.all():
+        samples = await session.scalars(
+            select(BroadcastCountSample).where(
+                BroadcastCountSample.broadcast_id == broadcast.broadcast_id,
+                BroadcastCountSample.observed_at >= broadcast.monitoring_started_at,
+                BroadcastCountSample.observed_at <= cutoff,
+            )
+        )
+        values = [sample.count for sample in samples.all()]
+        zone = await session.get(Zone, broadcast.zone_id)
+        if zone is None:
+            continue
+        if values and sum(values) / len(values) > zone.crowded_threshold:
+            broadcast.status = "in_progress"
+            broadcast.monitoring_started_at = None
+            for response in (
+                await session.scalars(
+                    select(BroadcastResponse).where(
+                        BroadcastResponse.broadcast_id == broadcast.broadcast_id
+                    )
+                )
+            ).all():
+                response.completed_at = None
+                staff = await session.get(User, response.staff_id)
+                if staff:
+                    staff.status = "delegating"
+        else:
+            finished_at = datetime.now(UTC)
+            broadcast.status = "finished"
+            broadcast.finished_at = finished_at
+            background_tasks.add_task(
+                process_snapshot,
+                str(broadcast.broadcast_id),
+                "after",
+                finished_at,
+                latest_annotated_frame("cam1"),
+            )
+        processed += 1
+    await session.commit()
+    return {"processed": processed}
+
+
+@router.post("/broadcasts/{broadcastId}/cancel")
+async def cancel_broadcast(
+    broadcastId: UUID,
+    session: AsyncSession = Depends(get_db),  # noqa: B008
+    user: User = Depends(get_current_user),  # noqa: B008
+) -> dict:
+    _require_role(user, "ops_manager")
+    broadcast = await _find_broadcast(session, broadcastId)
+    if broadcast.status != "open":
+        raise DispatchError(409, "not_open", "Only an open broadcast can be canceled.")
+    broadcast.status = "canceled"
+    await session.commit()
+    return {"broadcastId": str(broadcast.broadcast_id), "status": broadcast.status}
