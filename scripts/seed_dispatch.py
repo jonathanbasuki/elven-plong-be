@@ -18,6 +18,7 @@ ZONES_PATH = os.environ.get("ZONES_PATH", "zones.json")
 PASSWORD = "password123"  # same for every seeded user, local dev only
 
 USERS = [
+    ("admin@plongelven.io", "Admin", "admin"),
     ("manager@plongelven.io", "Manager Aldi", "ops_manager"),
     ("bunga@plongelven.io", "Bunga", "floor_staff"),
     ("citra@plongelven.io", "Citra", "floor_staff"),

@@ -7,24 +7,45 @@ The current authentication flow supports:
 
 ```text
 POST /api/v1/auth/login
-GET  /api/v1/auth/profile
 POST /api/v1/auth/refresh
 POST /api/v1/auth/logout
-POST /api/v1/auth/push-token
+GET  /api/v1/profile
+PUT  /api/v1/profile/push-token
+POST /dev/tickets        (admin only; see API_V1_MIGRATION.md §6)
 ```
+
+All request and response fields are camelCase (`accessToken`, `refreshToken`,
+`fullName`, ...). A body that sends a required field in snake_case (for
+example `refresh_token`) gets `422 validation_error`. The old profile
+and push-token routes are removed; see
+[API_V1_MIGRATION.md](API_V1_MIGRATION.md).
 
 The current roles are:
 
 ```text
-floor_staff
-ops_manager
+floor_staff   (id 1)
+ops_manager   (id 2)
+admin         (id 3)
 ```
 
-The dispatch endpoints under `/api/v1/dispatch/*` now require a valid access
-token, and the broadcast-creation and finish endpoints additionally require
-the `ops_manager` role (`POST /broadcasts/{id}/respond` requires
-`floor_staff`). A request with no token gets `401`; a token with the wrong
-role gets `403` with `error.code = "wrong_role"`.
+Roles do not inherit. Authentication per route group:
+
+- `POST /api/v1/auth/{login,refresh,logout}`: no access token.
+- `/api/v1/cameras/{cameraId}/...` (CCTV worker routes): the
+  `X-Internal-Api-Key` header, not a user token.
+- `WS /api/v1/crowd/live`: a bearer access token, or `?ticket=` with scope
+  `crowd:live`.
+- Every other `/api/v1/*` route: a bearer access token for any role.
+- `POST /api/v1/broadcasts` and `.../finish` need `ops_manager`; `.../accept`
+  and `.../complete` need `floor_staff`. `admin` has no dispatch powers.
+- `/dev/*` exists only with `APP_ENV=dev`. The page `GET /dev/cameras/{cameraId}`
+  needs no login; `GET /dev/cameras/{cameraId}/stream` needs a
+  `stream:<cameraId>` ticket; `POST /dev/tickets` and the other `/dev/cameras`
+  routes need an `admin` access token.
+
+A request with no or an invalid token gets `401 unauthenticated`; a token with
+the wrong role gets `403 wrong_role`. Every error has the shape
+`{"error": {"code": "...", "message": "..."}}`.
 
 ## 1. Configure local authentication
 
@@ -48,7 +69,12 @@ ACCESS_TOKEN_MINUTES=15
 REFRESH_TOKEN_DAYS=30
 ```
 
-The API rejects a missing or shorter-than-32-character `JWT_SECRET`.
+`APP_ENV` defaults to `prod` in the code; `.env.example` sets `APP_ENV=dev`.
+For any value other than `dev`, the API refuses to start when `JWT_SECRET` or
+`INTERNAL_API_KEY` is shorter than 32 characters. With `APP_ENV=dev` it starts,
+but every call that signs or checks a token fails with `503 auth_not_configured`
+until `JWT_SECRET` has at least 32 characters. A blank `INTERNAL_API_KEY`
+rejects every worker call with `401`, even in dev.
 
 Do not commit `.env`, passwords, JWT secrets, refresh tokens, or other local
 credentials.
@@ -93,20 +119,24 @@ Run the authentication migration:
 make db-migrate
 ```
 
-This creates:
+This runs `alembic upgrade head`. The auth tables are:
 
 ```text
 roles
 users
 refresh_tokens
-alembic_version
 ```
 
-The migration seeds the two roles:
+The same run also creates `zones`, `broadcasts`, `broadcast_responses`,
+`zone_count_history` and `alembic_version`.
+
+The migrations seed three roles. `admin` comes from revision `a1b2c3d4e5f6`,
+so run `make db-migrate` again after pulling it:
 
 ```text
 floor_staff
 ops_manager
+admin
 ```
 
 Verify the migration state:
@@ -129,8 +159,18 @@ uv run --env-file .env python scripts/create_user.py \
   --role ops_manager
 ```
 
-The script asks for the password twice. It stores only an Argon2id password
-hash in PostgreSQL.
+The script asks for the password twice, lowercases the email, and stores only
+an Argon2id password hash in PostgreSQL. `--role` accepts `floor_staff`,
+`ops_manager` or `admin`.
+
+Create an admin user (needed for the dev page, tickets and the `/dev/cameras` routes):
+
+```bash
+uv run --env-file .env python scripts/create_user.py \
+  --email admin@example.com \
+  --full-name "Admin" \
+  --role admin
+```
 
 Create a floor staff user when needed:
 
@@ -141,9 +181,10 @@ uv run --env-file .env python scripts/create_user.py \
   --role floor_staff
 ```
 
-For local dispatch testing, `scripts/seed_dispatch.py` seeds one manager and
-three floor-staff users (plus a zone) in one shot, all sharing the password
-`password123`:
+For local dispatch testing, `scripts/seed_dispatch.py` seeds one admin
+(`admin@plongelven.io`), one manager (`manager@plongelven.io`) and three
+floor-staff users, plus the first zone in `zones.json` (or `ZONES_PATH`). All
+seeded users share the password `password123`. Existing rows are skipped:
 
 ```bash
 uv run --env-file .env python scripts/seed_dispatch.py
@@ -189,6 +230,9 @@ Expected response:
 }
 ```
 
+If the database query fails, the response is
+`{"status": "not_ready", "database": "unavailable"}`.
+
 ## 8. Test login
 
 In Swagger, open `POST /api/v1/auth/login`, click **Try it out**, and submit:
@@ -204,23 +248,32 @@ The response contains:
 
 ```json
 {
-  "access_token": "...",
-  "refresh_token": "...",
-  "token_type": "bearer",
-  "expires_in": 900,
+  "accessToken": "...",
+  "refreshToken": "...",
+  "tokenType": "bearer",
+  "expiresIn": 900,
   "user": {
+    "id": "...",
     "email": "manager@example.com",
-    "role": "ops_manager"
+    "fullName": "Ops Manager",
+    "role": "ops_manager",
+    "isActive": true
   }
 }
 ```
+
+`expiresIn` is the access-token lifetime in seconds
+(`ACCESS_TOKEN_MINUTES * 60`, so `900` by default). The refresh token lasts
+`REFRESH_TOKEN_DAYS` (default 30). A wrong password, unknown email or inactive
+user all return `401 unauthenticated` with the message
+`Invalid email or password`.
 
 Keep both tokens temporarily for the following tests. Never commit or share
 them.
 
 ## 9. Test the profile endpoint
 
-Copy the `access_token` from the login response. Click the Swagger **Authorize**
+Copy the `accessToken` from the login response. Click the Swagger **Authorize**
 button and paste the access token without the `Bearer` prefix:
 
 ```text
@@ -230,7 +283,7 @@ eyJhbGciOiJIUzI1NiIs...
 Then execute:
 
 ```text
-GET /api/v1/auth/profile
+GET /api/v1/profile
 ```
 
 Expected response:
@@ -239,31 +292,32 @@ Expected response:
 {
   "id": "...",
   "email": "manager@example.com",
-  "full_name": "Ops Manager",
+  "fullName": "Ops Manager",
   "role": "ops_manager",
-  "is_active": true
+  "isActive": true
 }
 ```
 
 The same request can be tested with curl:
 
 ```bash
-curl -i http://127.0.0.1:8080/api/v1/auth/profile \
+curl -i http://127.0.0.1:8080/api/v1/profile \
   -H "Authorization: Bearer <access-token>"
 ```
 
 ## 10. Test refresh token rotation
 
-Open `POST /api/v1/auth/refresh` and submit the `refresh_token` from login:
+Open `POST /api/v1/auth/refresh` and submit the `refreshToken` from login:
 
 ```json
 {
-  "refresh_token": "<refresh-token>"
+  "refreshToken": "<refresh-token>"
 }
 ```
 
-The response contains a new access token and a new refresh token. The old
-refresh token is revoked and must not be accepted again.
+The response contains `accessToken`, `refreshToken`, `tokenType` and
+`expiresIn`, without the `user` object. The old refresh token is revoked; using
+it again returns `401 unauthenticated` (`Invalid refresh token`).
 
 ## 11. Test logout
 
@@ -271,17 +325,20 @@ Open `POST /api/v1/auth/logout` and submit the newest refresh token:
 
 ```json
 {
-  "refresh_token": "<latest-refresh-token>"
+  "refreshToken": "<latest-refresh-token>"
 }
 ```
 
 Expected response:
 
 ```text
-204 No Content
+200 {"status": "ok"}
 ```
 
-The refresh token is marked as revoked in the database.
+The refresh token is marked as revoked in the database and the user's push
+token is cleared. An unknown or already revoked token also returns `200` and
+changes nothing. Logout does not invalidate access tokens already issued; they
+stay valid until they expire.
 
 ## 12. Verify token records
 
@@ -297,7 +354,8 @@ Expected behavior:
 
 - Login creates a refresh token row.
 - Refresh sets `revoked_at` on the old row and creates a new row.
-- Logout sets `revoked_at` on the latest row.
+- Logout sets `revoked_at` on the row of the submitted token.
+- `user_agent` and `ip_address` stay `NULL`; no code writes them.
 - Raw refresh token values are never stored in the database.
 
 ## Authentication endpoint summary
@@ -305,29 +363,34 @@ Expected behavior:
 | Endpoint | Authentication | Database behavior |
 |---|---|---|
 | `POST /api/v1/auth/login` | None | Reads user, updates login time, creates refresh token |
-| `GET /api/v1/auth/profile` | Bearer access token | Reads active user and role |
-| `POST /api/v1/auth/refresh` | Refresh token in body | Revokes old token and creates a new one |
-| `POST /api/v1/auth/logout` | Refresh token in body | Revokes refresh token |
-| `POST /api/v1/auth/push-token` | Bearer access token | Stores the device's APNs token on the user row |
+| `POST /api/v1/auth/refresh` | `refreshToken` in body | Revokes old token and creates a new one |
+| `POST /api/v1/auth/logout` | `refreshToken` in body | Revokes refresh token, clears push token; returns `{"status": "ok"}` |
+| `GET /api/v1/profile` | Bearer access token | Reads active user and role |
+| `PUT /api/v1/profile/push-token` | Bearer access token | Stores `pushToken` on the user row; returns `{"status": "ok"}` |
+| `POST /dev/tickets` | Bearer access token, role `admin` (`APP_ENV=dev` only) | None (signs a 60-second ticket; body `{"scope": "stream:<cameraId>"}` or `{"scope": "crowd:live"}`, response `{"ticket", "expiresIn": 60}`) |
 | `GET /readyz` | None | Executes `SELECT 1` |
 
 ### Registering a device for push notifications
 
 ```bash
-curl -i -X POST http://127.0.0.1:8080/api/v1/auth/push-token \
+curl -i -X PUT http://127.0.0.1:8080/api/v1/profile/push-token \
   -H "Authorization: Bearer <access-token>" -H "Content-Type: application/json" \
-  -d '{"pushToken": "<64-char-hex-apns-device-token>"}'
+  -d '{"pushToken": "<apns-device-token>"}'
 ```
 
-The frontend calls this automatically after login (see `AppDelegate` in
-`PushNotifications.swift`). The token itself is only useful once APNs is
-configured server-side — see [PUSH_NOTIFICATIONS.md](PUSH_NOTIFICATIONS.md).
+The server only checks that `pushToken` is a non-empty string; it does not
+check the APNs token format. A new call replaces the stored token (one token
+per user). Which iOS code calls this route after login: TBD (frontend repo, not
+checked here). Old route names are listed in
+[API_V1_MIGRATION.md](API_V1_MIGRATION.md). The token is only used once APNs is
+configured server-side; see [PUSH_NOTIFICATIONS.md](PUSH_NOTIFICATIONS.md).
 
 ## Troubleshooting
 
-### `JWT authentication is not configured with a strong secret`
+### `503 auth_not_configured`
 
-Set `JWT_SECRET` in `.env`, restart the API, and try again:
+Only possible with `APP_ENV=dev`. Set `JWT_SECRET` in `.env` to at least 32
+characters, restart the API, and try again:
 
 ```bash
 openssl rand -hex 32
@@ -340,12 +403,22 @@ Check that the user exists and use the password entered during
 
 ### `Not authenticated`
 
-The profile request does not contain an access token. Use Swagger's
+The request does not contain an access token. Use Swagger's
 **Authorize** button or send:
 
 ```http
 Authorization: Bearer <access-token>
 ```
+
+### `Invalid access token`
+
+The access token is expired, malformed, signed with another `JWT_SECRET`, or
+belongs to a user that is missing or inactive. Refresh or log in again.
+
+### `403 wrong_role`
+
+The token is valid but the user's role is not allowed on that route. Roles do
+not inherit, so `admin` cannot create or accept broadcasts.
 
 ### `Invalid refresh token`
 

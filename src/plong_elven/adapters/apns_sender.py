@@ -1,6 +1,10 @@
 """Sends real push notifications to staff iPhones via Apple's APNs HTTP/2 provider
 API, authenticated with a token-based .p8 key (no certificates to renew).
 Fire-and-forget: a failed/unreachable push must not break broadcast creation.
+
+Exports:
+    send_push: The original module-level function for sending push notifications.
+    ApnsPushSender: A class implementing the PushSender protocol.
 """
 
 import logging
@@ -90,3 +94,17 @@ async def send_push(device_tokens: list[str], title: str, body: str) -> None:
                     )
             except httpx.HTTPError as e:
                 logger.warning("push to %s...%s failed: %s", token[:8], token[-4:], e)
+
+
+class ApnsPushSender:
+    """PushSender implementation that sends real APNs push notifications.
+
+    Wraps the module-level send_push function to conform to the PushSender protocol.
+    """
+
+    async def send(self, tokens: list[str], title: str, body: str) -> None:
+        """Send a push notification to all device tokens.
+
+        Fire-and-forget: failures are logged but never raised.
+        """
+        await send_push(tokens, title, body)

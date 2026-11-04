@@ -3,7 +3,7 @@
 Real push notifications to staff and manager iPhones, sent directly from this
 backend to Apple's APNs HTTP/2 provider API using a token-based `.p8` Auth
 Key — no certificates to renew, no third-party push service. Implementation:
-`src/plong_elven/api/apns.py`.
+`src/plong_elven/adapters/apns_sender.py`.
 
 This is optional: without it configured, the app still works end to end —
 pushes are just skipped (logged as a warning), nothing breaks.
@@ -12,16 +12,30 @@ pushes are just skipped (logged as a warning), nothing breaks.
 
 | Trigger | Recipients | Code |
 |---|---|---|
-| Manager creates a broadcast | every `floor_staff` with a registered device token | `create_broadcast` in `dispatch.py` |
-| A zone's status newly crosses into `warning` or `crowded` | every `ops_manager` with a registered device token | `_process_zone_update` in `detections.py` |
+| An `ops_manager` creates a broadcast (`POST /api/v1/broadcasts`) | every `floor_staff` user with a non-null `push_token` | `BroadcastService.create` in `services/broadcast_service.py` |
+| A zone's status newly crosses into `warning` or `crowded` | every `ops_manager` user with a non-null `push_token` | `AlertService.on_count` in `services/internal/alert_service.py` |
 
-The status-change push only fires on the transition into `warning`/`crowded`
-— not on every `POST /detections` while the zone stays busy (the worker
-posts roughly once a second), and not on the way back down to `safe`. State
-is tracked in-memory per zone (`_last_status`), so it resets on API restart.
+`admin` users never receive pushes. Recipients are selected by role in
+`NotificationService.notify_role` (`services/internal/notification_service.py`). Both
+pushes run as FastAPI background tasks after the response, so a push failure
+never changes the API response.
 
-Alert copy (`_ALERT_MESSAGES` in `detections.py`) — crowded is intentionally
-more urgent than warning:
+Broadcast push copy: title `New broadcast`, body
+`Crowd control needed in {zone} — tap to accept`.
+
+The status-change push only fires on the transition into `warning`/`crowded`,
+not on every count post while the zone stays busy, and not on the way back
+down to `safe`. Counts come from the worker route
+`POST /api/v1/cameras/{cameraId}/detections` or, in dev, the manual
+`POST /dev/cameras/{cameraId}/detections`; both use the same ingest path. Only
+zones that exist in the `zones` table are checked. Each status has a 5-minute
+cooldown per zone; a change to a different status (for example `warning` to
+`crowded`) is not throttled. State is kept in memory
+(`LiveState.last_status` and `last_alert_sent_at` in `state/live_state.py`), so
+it resets on API restart.
+
+Alert copy (`default_alert_rules` in `services/internal/alert_service.py`) — crowded is
+intentionally more urgent than warning:
 
 | Status | Title | Body |
 |---|---|---|
@@ -62,9 +76,14 @@ APNS_USE_SANDBOX=true             # true for Xcode development builds, false for
 
 `APNS_TOPIC` must exactly equal the iOS app's bundle identifier
 (`PRODUCT_BUNDLE_IDENTIFIER` in the frontend's `.xcodeproj`) — if it's wrong,
-Apple silently rejects every push with no error visible server-side. All
-values are read via `src/plong_elven/common/settings.py`; restart the API
-after changing `.env` (`--reload` only watches `.py` files).
+Apple will not deliver the push. All values are read via
+`src/plong_elven/common/settings.py` (`APNS_USE_SANDBOX` defaults to `true`);
+restart the API after changing `.env` (`--reload` only watches `.py` files).
+
+`APNS_USE_SANDBOX=true` sends to `api.sandbox.push.apple.com`, `false` to
+`api.push.apple.com`. The signing JWT (ES256, `kid` = `APNS_KEY_ID`, `iss` =
+`APNS_TEAM_ID`) is cached in memory for 50 minutes. Each push is an `alert`
+with `sound: default`, sent over HTTP/2 with a 5-second timeout.
 
 ## 4. Enable the capability in the iOS app
 
@@ -80,10 +99,10 @@ Real push delivery only works on a **physical device**, not the simulator.
 
 ## 5. Verify
 
-Log in on a device (the app requests notification permission and registers
-its device token automatically — see `PushNotifications.swift` and
-`POST /api/v1/auth/push-token` in the frontend/backend respectively), then
-check it reached the database:
+Log in on a device. The app must send its APNs device token to
+`PUT /api/v1/profile/push-token` with body `{"pushToken": "<token>"}` (which
+iOS code does this: TBD, frontend repo not checked here). Logout clears the
+stored token. Check it reached the database:
 
 ```bash
 docker compose --env-file .env -f infra/docker-compose.yml exec -T db \
@@ -91,35 +110,43 @@ docker compose --env-file .env -f infra/docker-compose.yml exec -T db \
   -c "SELECT email, (push_token IS NOT NULL) AS has_push_token FROM users;"
 ```
 
-Trigger a real push: create a broadcast (`POST /api/v1/dispatch/broadcasts`,
-see [DISPATCH_API.md](DISPATCH_API.md)) as a manager with at least one
+Trigger a real push: create a broadcast (`POST /api/v1/broadcasts` with an
+`ops_manager` token, see [DISPATCH_API.md](DISPATCH_API.md)) with at least one
 `floor_staff` device registered, or drive a zone's count into `warning`/
-`crowded` via the in-browser **Dev Tools** tab (see
-[SETUP_CCTV.md](SETUP_CCTV.md)) with a manager device registered.
+`crowded` from the **Dev Tools** tab of the dev page
+`/dev/cameras/{cameraId}` (`APP_ENV=dev`, admin login; see
+[README](../README.md) step 11) with an `ops_manager` device registered.
 
 ## Troubleshooting
 
 ### Nothing arrives, no error anywhere
 
-Check `APNS_KEY_PATH` actually points at a file that exists — a wrong path
+Check `APNS_KEY_PATH` actually points at a file that exists. A wrong path
 fails inside a background task and is only visible as a server log warning
-(`could not load APNs signing key, skipping push`), never as an API error,
-since a push failure must never block broadcast creation.
+(`could not load APNs signing key, skipping push`), never as an API error.
+Also check that the recipients have a `push_token` (query above) and the right
+role.
 
 ### `APNs not configured, skipping push to N device(s)` in the logs
 
-One of `APNS_KEY_PATH`/`APNS_TEAM_ID`/`APNS_KEY_ID` is empty in `.env`.
+One of `APNS_KEY_PATH`/`APNS_TEAM_ID`/`APNS_KEY_ID` is empty in `.env`. This
+check does not look at `APNS_TOPIC`.
+
+### `push to xxxxxxxx...xxxx failed: <status> <body>` in the logs
+
+Apple answered with a non-`200` status (or the request failed). The log line
+includes Apple's response body, which names the reason.
 
 ### Push accepted (`200` from Apple) but never arrives on the phone
 
-Almost always `APNS_TOPIC` not matching the app's real bundle id, or
-`APNS_USE_SANDBOX` not matching how the app was built (`true` for a normal
-Xcode run, `false` for TestFlight/App Store). Both fail silently from Apple's
-side — a `200` response only means the payload was *accepted*, not delivered.
+A `200` only means Apple accepted the payload, not that it was delivered.
+Check that `APNS_TOPIC` matches the app's bundle id and that
+`APNS_USE_SANDBOX` matches how the app was built (`true` for a normal Xcode
+run, `false` for TestFlight/App Store). Also check that the stored
+`push_token` is current: a new `PUT /api/v1/profile/push-token` replaces it,
+and logout clears it.
 
 ### Banner doesn't show while the app is open
 
-iOS suppresses push banners by default while the app is foregrounded, unless
-the app opts in. See `userNotificationCenter(_:willPresent:)` in
-`PushNotifications.swift` (frontend) — it requests `.banner, .sound, .badge`
-even in foreground.
+iOS hides push banners while the app is in the foreground unless the app opts
+in. Whether the iOS app opts in: TBD (frontend repo, not checked here).

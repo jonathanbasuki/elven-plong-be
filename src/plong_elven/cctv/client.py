@@ -18,8 +18,8 @@ def post_counts(
 ) -> bool:
     try:
         response = client.post(
-            f"{base_url}/detections",
-            json={"camera_id": camera_id, "counts": counts},
+            f"{base_url}/api/v1/cameras/{camera_id}/detections",
+            json={"counts": counts},
             headers={"X-Internal-Api-Key": api_key},
             timeout=2.0,
         )
@@ -40,7 +40,7 @@ def post_frame(
 ) -> bool:
     """raw=True posts the plain camera frame (no overlay) used for the zone editor's
     'capture frame' step; raw=False posts the annotated frame used for the live stream."""
-    path = f"/frames/{camera_id}/raw" if raw else f"/frames/{camera_id}"
+    path = f"/api/v1/cameras/{camera_id}/frames" + ("/raw" if raw else "")
     try:
         response = client.post(
             f"{base_url}{path}",

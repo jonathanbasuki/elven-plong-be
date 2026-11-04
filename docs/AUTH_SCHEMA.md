@@ -1,12 +1,11 @@
-# Minimal Authentication Schema
+# Authentication Schema
 
-This document defines the first database migration for user authentication.
-It is intentionally limited to login/session support. Role-protected business
-endpoints and password reset can be added in later migrations.
+This document describes the authentication tables as the Alembic migrations
+and `src/plong_elven/db/models.py` create them today.
 
 ## Scope
 
-The first migration creates:
+The first migration (`ad950fffbf32_create_auth_tables`) creates:
 
 ```text
 roles
@@ -14,8 +13,18 @@ users
 refresh_tokens
 ```
 
-Each user has exactly one role. The CCTV worker continues to authenticate with
-the separate `X-Internal-Api-Key`; it does not use the user tables.
+Each user has exactly one role. The CCTV worker authenticates with the separate
+`X-Internal-Api-Key` header; it does not use the user tables.
+
+Migration chain (oldest first):
+
+```text
+ad950fffbf32  create auth tables (roles, users, refresh_tokens; seeds roles 1, 2)
+7b5b2f7c1d21  create dispatch tables (zones, staff, broadcasts, broadcast_responses)
+f9fe68ec2955  merge staff into users (adds users.status, users.push_token; drops staff)
+f67711b4a0bb  add zone_count_history
+a1b2c3d4e5f6  add admin role (seeds role 3)
+```
 
 ## Relationships
 
@@ -25,8 +34,7 @@ roles 1 ──── * users 1 ──── * refresh_tokens
 
 ## PostgreSQL schema
 
-The following SQL describes the expected result of the Alembic migration. The
-application may implement the same structure with SQLAlchemy models.
+The following SQL matches what the migrations produce for the auth tables.
 
 ```sql
 CREATE TABLE roles (
@@ -41,11 +49,15 @@ CREATE TABLE users (
     email VARCHAR(255) NOT NULL,
     password_hash VARCHAR(255) NOT NULL,
     full_name VARCHAR(120) NOT NULL,
-    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    is_active BOOLEAN NOT NULL,           -- no DB default; the ORM sets TRUE
     email_verified_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    last_login_at TIMESTAMPTZ
+    last_login_at TIMESTAMPTZ,
+    -- added by f9fe68ec2955:
+    status TEXT NOT NULL DEFAULT 'idle',
+    push_token TEXT,
+    CONSTRAINT users_status_check CHECK (status IN ('idle', 'delegating'))
 );
 
 CREATE UNIQUE INDEX uq_users_email_lower
@@ -61,7 +73,7 @@ CREATE TABLE refresh_tokens (
     expires_at TIMESTAMPTZ NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     revoked_at TIMESTAMPTZ,
-    user_agent TEXT,
+    user_agent VARCHAR,
     ip_address INET
 );
 
@@ -73,99 +85,103 @@ CREATE INDEX ix_refresh_tokens_active
     WHERE revoked_at IS NULL;
 ```
 
+`id` values for `users` and `refresh_tokens` are generated in Python
+(`uuid4`), not by the database.
+
 ## Seed data
 
-The initial migration should insert the two roles using an idempotent seed:
+The migrations insert three roles with plain inserts (no `ON CONFLICT`):
 
-```sql
-INSERT INTO roles (id, name)
-VALUES
-    (1, 'floor_staff'),
-    (2, 'ops_manager')
-ON CONFLICT (id) DO UPDATE
-SET name = EXCLUDED.name;
-```
+| id | name | migration |
+|---|---|---|
+| 1 | `floor_staff` | `ad950fffbf32` |
+| 2 | `ops_manager` | `ad950fffbf32` |
+| 3 | `admin` | `a1b2c3d4e5f6` |
 
-Do not seed a real user password in the migration. Create the first manager
-through a protected setup/seed command that hashes the supplied password with
-Argon2id. Never place the password or its plaintext value in Git.
+The downgrade of `a1b2c3d4e5f6` deletes role 3 and fails while admin users
+exist (`ON DELETE RESTRICT`).
+
+No migration seeds a user. Create users with `scripts/create_user.py` (hashes
+the prompted password with Argon2id), or for local testing with
+`scripts/seed_dispatch.py` (fixed dev password). Never put a password in Git.
 
 ## Field rules
 
 ### `roles`
 
-- `name` is one of `floor_staff` or `ops_manager` for the MVP.
+- `name` is one of `floor_staff`, `ops_manager` or `admin`.
 - Role names are stable identifiers, not display labels.
+- Roles do not inherit. Routes check the exact role name
+  (`require_role` in `api/deps.py`); a mismatch returns `403 wrong_role`.
 
 ### `users`
 
-- Normalize `email` to lowercase before insert and lookup.
-- `password_hash` must contain an Argon2id hash, never a plaintext password.
+- `scripts/create_user.py` lowercases `email` before insert. Login looks the
+  user up with `lower(email)`, so lookup is case-insensitive.
+- `password_hash` holds an Argon2id hash, never a plaintext password.
 - `role_id` is required, so every user has exactly one role.
-- `is_active = false` prevents login without deleting historical records.
-- Application code updates `updated_at` whenever the user changes.
+- `is_active = false` blocks login, refresh and access-token use without
+  deleting the row.
+- `last_login_at` is set on each successful login.
+- `updated_at` is set on insert only; no code updates it later.
+- `email_verified_at` is not read or written by any code yet.
+- `status` and `push_token` are described under
+  [Dispatch fields](#dispatch-fields-on-users).
 
 ### `refresh_tokens`
 
-- Generate a random refresh token for the client.
-- Store only a SHA-256 hex digest in `token_hash`.
-- Return the raw token only once in the login/refresh response.
-- Revoke the old token when rotating during refresh.
-- Set `revoked_at` on logout.
-- Delete expired/revoked rows periodically, but do not rely on deletion for
-  authorization.
+- The raw token is `secrets.token_urlsafe(48)`. Only its SHA-256 hex digest
+  is stored in `token_hash`.
+- The raw token is returned once, in the login or refresh response.
+- `expires_at` is `now + REFRESH_TOKEN_DAYS` (default 30 days).
+- Refresh sets `revoked_at` on the old row and inserts a new row.
+- Logout sets `revoked_at` on the submitted token's row and clears the user's
+  `push_token`.
+- `user_agent` and `ip_address` are never written.
+- Cleanup of expired or revoked rows: TBD (no job exists). Authorization never
+  relies on deletion; it checks `revoked_at` and `expires_at`.
 
-## Migration order
+## Tokens
 
-The teammate implementing the database should use this order:
+- Access token: HS256 JWT signed with `JWT_SECRET`, claims `sub` (user id),
+  `type: "access"`, `iat`, `exp`. Lifetime `ACCESS_TOKEN_MINUTES` (default 15).
+- Ticket: HS256 JWT with `type: "ticket"`, a `scope` (`stream:<cameraId>` or
+  `crowd:live`), 60-second lifetime. Minted by `POST /dev/tickets` for `admin`
+  users only, and accepted only as `?ticket=` on the dev stream and
+  `WS /api/v1/crowd/live`.
 
-1. Configure the async SQLAlchemy engine from `DATABASE_URL`.
-2. Configure Alembic to load the SQLAlchemy metadata.
-3. Add the `roles`, `users`, and `refresh_tokens` models.
-4. Generate or write one Alembic revision for these tables and indexes.
-5. Run `alembic upgrade head` against the local PostgreSQL container.
-6. Seed the two roles idempotently.
-7. Add a separate setup command for the first `ops_manager` user.
-8. Add migration tests that run against a temporary PostgreSQL database.
-
-Expected command:
-
-```bash
-uv run alembic upgrade head
-```
-
-## Minimal endpoint mapping
-
-The schema supports these initial endpoints:
-
-```text
-POST /api/v1/auth/login
-GET  /api/v1/auth/profile
-POST /api/v1/auth/refresh
-POST /api/v1/auth/logout
-```
-
-Before using the auth endpoints, set a random JWT secret in `.env`:
+Outside `APP_ENV=dev` (code default `prod`), the API refuses to start when
+`JWT_SECRET` or `INTERNAL_API_KEY` is shorter than 32 characters. With
+`APP_ENV=dev` it starts, and token calls return `503 auth_not_configured` until
+`JWT_SECRET` has at least 32 characters. Generate one with:
 
 ```bash
 openssl rand -hex 32
 ```
 
-```env
-JWT_SECRET=<generated-value>
+## Endpoint mapping
+
+```text
+POST /api/v1/auth/login
+POST /api/v1/auth/refresh
+POST /api/v1/auth/logout
+GET  /api/v1/profile
+PUT  /api/v1/profile/push-token
+POST /dev/tickets             (APP_ENV=dev only, admin)
 ```
 
-The API rejects missing or shorter-than-32-character JWT secrets.
+Old route names are listed in [API_V1_MIGRATION.md](API_V1_MIGRATION.md).
 
-Role authorization is intentionally out of scope for this first migration, but
-`role_id` is included so the login response and future authorization checks do
-not require a schema change.
+Apply all migrations with:
 
-## Later addition: dispatch fields on `users`
+```bash
+make db-migrate    # uv run --env-file .env alembic upgrade head
+```
 
-A later migration (`f9fe68ec2955_merge_staff_into_users`) added two columns
-used by the dispatch/broadcast flow directly to `users`, rather than keeping
-a separate `staff` table:
+## Dispatch fields on `users`
+
+Migration `f9fe68ec2955_merge_staff_into_users` added two columns to `users`
+and dropped the separate `staff` table created by `7b5b2f7c1d21`:
 
 ```sql
 ALTER TABLE users ADD COLUMN status TEXT NOT NULL DEFAULT 'idle';
@@ -174,19 +190,17 @@ ALTER TABLE users ADD CONSTRAINT users_status_check
     CHECK (status IN ('idle', 'delegating'));
 ```
 
-A `floor_staff` user *is* staff for dispatch purposes — there is no separate
-staff identity or id. `broadcast_responses.staff_id` references `users.id`.
-This removed an earlier standalone `staff` table that duplicated the same
-people with a second primary key.
+A `floor_staff` user is the staff member for dispatch; there is no separate
+staff id. `broadcast_responses.staff_id` references `users.id`.
 
-`push_token` is written by `POST /api/v1/auth/push-token` and read by the
-push-notification sender for both roles — see
-[PUSH_NOTIFICATIONS.md](PUSH_NOTIFICATIONS.md).
+`push_token` is written by `PUT /api/v1/profile/push-token` (one token per
+user; a new call replaces it), cleared by `POST /api/v1/auth/logout`, and read
+by `NotificationService.notify_role` when it pushes to `floor_staff` or
+`ops_manager` users. See [PUSH_NOTIFICATIONS.md](PUSH_NOTIFICATIONS.md).
 
-## Not included yet
+## Not included
 
-Do not add these tables to the first migration unless the endpoint contract is
-already finalized:
+These tables do not exist:
 
 ```text
 password_reset_tokens
@@ -195,5 +209,4 @@ user_devices
 permissions
 ```
 
-`password_reset_tokens` should be a later migration after the reset email
-provider and token delivery flow are decided.
+Password reset is not implemented.

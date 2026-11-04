@@ -9,9 +9,13 @@ Tapo camera --RTSP--> MediaMTX --HLS--> iPhone / iOS AVPlayer
                        +--RTSP--> CCTV worker --> API detections
 ```
 
-MediaMTX serves the camera's original video. The API's `/stream/default` is a
+MediaMTX serves the camera's original video. The API's
+`/dev/cameras/default/stream` (admin ticket, see
+[SETUP_CCTV.md](SETUP_CCTV.md) section 8) is a
 separate annotated preview produced by the worker; HLS does not depend on the
-API being online.
+API being online. That API preview exists only with `APP_ENV=dev`; in
+production the only video is this HLS feed. The iOS app always gets video from
+MediaMTX, never from the API.
 
 ## 1. Connect and configure the camera
 
@@ -135,7 +139,7 @@ deployed service.
 
 The Plong app plays this feed through `AVPlayerViewController` with
 `showsPlaybackControls = false` (see `CCTVPreview`/`LivePlayerView` in
-`ContentView.swift`) rather than SwiftUI's `VideoPlayer`, which always shows a
+`ContentView.swift`, in the iOS repository, not verified from this repo) rather than SwiftUI's `VideoPlayer`, which always shows a
 pause/scrub bar. This keeps the preview always live — a manager can't pause it
 and mistake a frozen frame for the current state.
 
@@ -158,10 +162,16 @@ The worker reads the RTSP relay from MediaMTX and posts detection data and
 annotated/raw preview frames to the API. The HLS URL remains available if the
 API is stopped, as long as MediaMTX and the CCTV camera remain online.
 
-The annotated API preview is separate:
+`make cctv-relay` runs the worker with `--camera-id default --zones zones.json`,
+so create `zones.json` first (`cp zones.example.json zones.json`).
+
+The annotated API preview is separate and dev only. Open it from the dev page
+(`APP_ENV=dev`, admin login), or with a `stream:default` ticket as in
+[SETUP_CCTV.md](SETUP_CCTV.md) section 8:
 
 ```text
-http://127.0.0.1:8080/stream/default
+http://127.0.0.1:8080/dev/cameras/default
+http://127.0.0.1:8080/dev/cameras/default/stream?ticket=<ticket>
 ```
 
 ## Security notes
