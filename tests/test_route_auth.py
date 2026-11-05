@@ -9,7 +9,7 @@ allow-list is probed twice:
    1008);
 2. with every credential EXCEPT the one the route expects, which must also be
    rejected. This catches a route guarded by the wrong mechanism, for example a
-   worker route that accepts a bearer token instead of the internal key.
+   camera route that accepts a bearer token instead of the internal key.
 
 Expected auth is assigned by convention: `/api/v1/cameras/` uses the internal key,
 `.../stream` uses a `stream:<cameraId>` ticket, the WebSocket takes a bearer or
@@ -66,7 +66,7 @@ ALLOWED_OPEN = PUBLIC | BUILTIN_DOCS
 PARAMS = {
     "cameraId": "cam1",
     "zoneId": "z1",
-    "broadcastId": str(uuid4()),
+    "taskId": str(uuid4()),
     "staffId": str(uuid4()),
 }
 
@@ -267,10 +267,10 @@ def test_walker_flags_deliberately_unprotected_routes() -> None:
 
 ANY = {"floor_staff", "ops_manager", "admin"}
 DISPATCH_ROUTES = {
-    ("POST", "/api/v1/broadcasts"),
-    ("POST", "/api/v1/broadcasts/{broadcastId}/accept"),
-    ("POST", "/api/v1/broadcasts/{broadcastId}/complete"),
-    ("POST", "/api/v1/broadcasts/{broadcastId}/finish"),
+    ("POST", "/api/v1/tasks/broadcast"),
+    ("POST", "/api/v1/tasks/{taskId}/accept"),
+    ("POST", "/api/v1/tasks/{taskId}/complete"),
+    ("POST", "/api/v1/tasks/{taskId}/finish"),
 }
 ADMIN_CAMERA_ROUTES = {
     ("GET", "/dev/cameras/{cameraId}/layout"),
@@ -284,12 +284,12 @@ ROLE_MATRIX = {
     ("GET", "/api/v1/zones/{zoneId}"): ANY,
     ("GET", "/api/v1/zones/{zoneId}/crowd"): ANY,
     ("GET", "/api/v1/zones/{zoneId}/crowd/history"): ANY,
-    ("GET", "/api/v1/broadcasts"): ANY,
+    ("GET", "/api/v1/tasks"): ANY,
     ("GET", "/api/v1/staff/{staffId}"): ANY,
-    ("POST", "/api/v1/broadcasts"): {"ops_manager"},
-    ("POST", "/api/v1/broadcasts/{broadcastId}/accept"): {"floor_staff"},
-    ("POST", "/api/v1/broadcasts/{broadcastId}/complete"): {"floor_staff"},
-    ("POST", "/api/v1/broadcasts/{broadcastId}/finish"): {"ops_manager"},
+    ("POST", "/api/v1/tasks/broadcast"): {"ops_manager"},
+    ("POST", "/api/v1/tasks/{taskId}/accept"): {"floor_staff"},
+    ("POST", "/api/v1/tasks/{taskId}/complete"): {"floor_staff"},
+    ("POST", "/api/v1/tasks/{taskId}/finish"): {"ops_manager"},
     ("GET", "/dev/cameras/{cameraId}/layout"): {"admin"},
     ("PUT", "/dev/cameras/{cameraId}/layout"): {"admin"},
     ("GET", "/dev/cameras/{cameraId}/snapshot"): {"admin"},
@@ -298,8 +298,12 @@ ROLE_MATRIX = {
 }
 BODIES = {
     ("PUT", "/api/v1/profile/push-token"): {"pushToken": "t"},
-    ("POST", "/api/v1/broadcasts"): {"zoneId": "z1", "staffNeeded": 1},
-    ("PUT", "/dev/cameras/{cameraId}/layout"): {"anchor": "center", "zones": []},
+    ("POST", "/api/v1/tasks/broadcast"): {
+        "zoneId": "z1",
+        "totalStaff": 1,
+        "instruction": "x",
+    },
+    ("PUT", "/dev/cameras/{cameraId}/layout"): {"zones": []},
     ("POST", "/dev/tickets"): {"scope": "crowd:live"},
     ("POST", "/dev/cameras/{cameraId}/detections"): {"counts": {"z1": 1}},
 }

@@ -1,6 +1,5 @@
 """FastAPI dependencies shared across routers."""
 
-import os
 from collections.abc import Awaitable, Callable
 
 from fastapi import Depends, Header
@@ -12,7 +11,6 @@ from plong_elven.api.security import check_internal_key
 from plong_elven.db.models import User
 from plong_elven.db.session import SessionFactory, get_db
 from plong_elven.services.auth_service import AuthService
-from plong_elven.services.broadcast_service import BroadcastService
 from plong_elven.services.camera_service import CameraService
 from plong_elven.services.crowd_service import CrowdService
 from plong_elven.services.errors import AppError
@@ -22,6 +20,7 @@ from plong_elven.services.internal.alert_service import (
 )
 from plong_elven.services.internal.notification_service import NotificationService
 from plong_elven.services.ports import AlertRule, PushSender
+from plong_elven.services.task_service import TaskService
 from plong_elven.services.zone_service import ZoneService
 from plong_elven.state.live_state import LiveState, get_live_state
 
@@ -31,7 +30,7 @@ bearer = HTTPBearer(auto_error=False)
 def require_internal_key(
     x_internal_api_key: str | None = Header(default=None),
 ) -> None:
-    """Dependency that checks the X-Internal-Api-Key header."""
+    """Dependency that checks the X-Internal-Api-Key header (camera routes)."""
     check_internal_key(x_internal_api_key)
 
 
@@ -88,8 +87,8 @@ def get_alert_service(
 def get_camera_service(
     live: LiveState = Depends(get_live_state),  # noqa: B008
 ) -> CameraService:
-    """CameraService over the live state and the configured zones file."""
-    return CameraService(live, os.environ.get("ZONES_PATH", "zones.json"))
+    """CameraService over the live state (latest frames)."""
+    return CameraService(live)
 
 
 def get_crowd_service(
@@ -129,9 +128,9 @@ def require_role(*names: str) -> Callable[..., Awaitable[User]]:
     return _check_role
 
 
-def get_broadcast_service(
+def get_task_service(
     session: AsyncSession = Depends(get_db),  # noqa: B008
     notifier: NotificationService = Depends(get_notification_service),  # noqa: B008
-) -> BroadcastService:
-    """Return a BroadcastService bound to the request session."""
-    return BroadcastService(session, notifier)
+) -> TaskService:
+    """Return a TaskService bound to the request session."""
+    return TaskService(session, notifier)

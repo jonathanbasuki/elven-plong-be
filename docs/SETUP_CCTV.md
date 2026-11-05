@@ -1,42 +1,46 @@
 # CCTV Integration Setup
 
-This guide explains how to run the CCTV worker locally and view its annotated
-MJPEG stream through the Plong Elven API.
+This guide explains how to run the camera process locally and view its
+annotated MJPEG stream through the Plong Elven API.
 
-The local flow is:
+"The camera" in this repo means the camera *process*
+(`python -m plong_elven.cctv`), not the physical CCTV device: it reads the
+device's video, detects people, and talks to the API. The local flow is:
 
 ```text
-CCTV -> CCTV worker -> Plong Elven API -> browser
+CCTV device -> camera process -> Plong Elven API -> browser
 ```
 
-The worker reads frames, runs the detection model, draws the annotations, and
-posts counts and JPEG frames to the worker routes
-`POST /api/v1/cameras/{cameraId}/detections`, `.../frames` and
-`.../frames/raw`, with the `X-Internal-Api-Key` header. The detections body is
+The camera process reads its zones from the API
+(`GET /api/v1/cameras/{cameraId}/zones`, re-read every 5 seconds), reads
+frames, runs the detection model, draws the annotations, and posts counts and
+JPEG frames to the camera routes `POST /api/v1/cameras/{cameraId}/detections`,
+`.../frames` and `.../frames/raw`, all with the `X-Internal-Api-Key` header. The detections body is
 `{"counts": {"z2": 3}}`; the camera id is in the path. The API serves the
 annotated frames through `GET /dev/cameras/{cameraId}/stream?ticket=...`,
 which needs a 60-second admin ticket (see section 8).
 
+Zones live only in the database (`zone` table: id, name, camera-frame polygon,
+threshold). There is no `zones.json`. Until a zone exists the camera counts
+nothing; `scripts/seed_dispatch.py` creates a full-frame zone `z1`.
+
 The stream, the dev page, the ticket route and the zone editor API all live
 under `/dev` and exist only when the API runs with `APP_ENV=dev`. In
-production there is no browser stream and no zone editor API: edit
-`zones.json` by hand. The worker re-reads its `--zones` file every 2 seconds,
-so a hand edit takes effect without a restart. The iOS app does not use the
-API stream; it plays the camera's video as HLS from MediaMTX
-([SETUP_HLS.md](SETUP_HLS.md)).
+production there is no browser stream and no zone editor API: change zones
+directly in the `zone` table. Either way the camera picks the change up within
+5 seconds, without a restart. The iOS app does not use the API stream; it
+plays the camera's video as HLS from MediaMTX ([SETUP_HLS.md](SETUP_HLS.md)).
 
-This guide runs the worker with raw `uv run` commands to show every flag
+This guide runs the camera with raw `uv run` commands to show every flag
 explicitly. Day to day, prefer the Makefile shortcuts instead:
 `make cctv ARGS="..."` (same flags, positional source first) for a webcam/file,
 or `make cctv-relay` for an RTSP camera behind MediaMTX — see
 [SETUP_HLS.md](SETUP_HLS.md), which also covers the important gotcha that only
-one RTSP client can read the camera at a time. To draw real zone polygons
-instead of using the flat `zones.example.json` template below, use the
-in-browser editor at `GET /dev/cameras/{cameraId}` (`APP_ENV=dev` only, admin
-login) — see the main [README](../README.md), step 11. The editor saves to the
-API's `ZONES_PATH` (default `zones.json`), and the worker only sees that file
-if it runs with `--zones zones.json`; the commands below use
-`zones.example.json`, so editor saves do not reach them.
+one RTSP client can read the camera at a time. To draw real zone polygons, use
+the in-browser editor at `GET /dev/cameras/{cameraId}` (`APP_ENV=dev` only,
+admin login) — see the main [README](../README.md), step 11. Each zone gets a
+threshold there too. Saving replaces the zone set in the database: zones you
+removed are deleted, unless a zone has tasks (`409 zone_in_use`).
 
 ## Requirements
 
@@ -92,15 +96,19 @@ API_BASE_URL=http://127.0.0.1:8080
 CAMERA_ID=default
 RTSP_URL=
 YOLO_DEVICE=mps
+CAMERA_ANCHOR=bottom_center
 DRY_RUN=0
 INTERNAL_API_KEY=<generated-value>
 ```
 
+`CAMERA_ANCHOR` (or `--anchor`) picks which point of a person's box decides
+their zone: `bottom_center` (feet, the default), `center` or `top_center`.
+
 `INTERNAL_API_KEY` must not be blank: a blank key makes the API reject every
-worker call with `401`, even with `APP_ENV=dev`. Generate one with
+camera call with `401`, even with `APP_ENV=dev`. Generate one with
 `openssl rand -hex 32` (outside `APP_ENV=dev` the API refuses to start with a
 key shorter than 32 characters). The same value must be available to both the
-API and the worker. Never commit `.env` or camera credentials.
+API and the camera. Never commit `.env` or camera credentials.
 
 ## 3. Install dependencies
 
@@ -140,8 +148,8 @@ make lint
 make test
 ```
 
-The worker should report the machine architecture and whether MPS is
-available. If MPS is unavailable, run the worker with `--device cpu`.
+`make doctor` reports the machine architecture and whether MPS is
+available. If MPS is unavailable, run the camera with `--device cpu`.
 
 ## 6. Start the API
 
@@ -165,7 +173,7 @@ Expected response:
 
 Keep the API terminal running.
 
-## 7. Start the CCTV worker
+## 7. Start the camera process
 
 ### Option A: Use a webcam
 
@@ -174,8 +182,7 @@ In a second terminal, run:
 ```bash
 uv run --env-file .env python -m plong_elven.cctv \
   0 \
-  --camera-id default \
-  --zones zones.example.json
+  --camera-id default
 ```
 
 The positional source `0` refers to the first local webcam.
@@ -185,8 +192,7 @@ The positional source `0` refers to the first local webcam.
 ```bash
 uv run --env-file .env python -m plong_elven.cctv \
   /path/to/video.mp4 \
-  --camera-id default \
-  --zones zones.example.json
+  --camera-id default
 ```
 
 ### Option C: Use an RTSP camera
@@ -202,11 +208,10 @@ Then run:
 
 ```bash
 uv run --env-file .env python -m plong_elven.cctv \
-  --camera-id default \
-  --zones zones.example.json
+  --camera-id default
 ```
 
-The RTSP URL must be reachable from the machine running the worker. Test it
+The RTSP URL must be reachable from the machine running the camera. Test it
 independently when needed:
 
 ```bash
@@ -216,11 +221,11 @@ ffprobe -rtsp_transport tcp \
 ```
 
 Do not use `--dry-run` when testing the browser stream. In dry-run mode the
-worker prints detection counts but does not post frames to the API.
+camera prints detection counts but does not post frames to the API.
 
 ## 8. View the CCTV stream
 
-After the worker has successfully read and posted frames, the easiest viewer
+After the camera has successfully read and posted frames, the easiest viewer
 is the dev page (API running with `APP_ENV=dev`, admin login):
 
 ```text
@@ -251,8 +256,8 @@ The stream is an MJPEG stream, so the browser may keep loading indefinitely.
 That is expected. The annotated video should appear once the first frame has
 arrived.
 
-If the worker uses another camera ID, use the same ID in the scope and the
-URL. For example, a worker started with `--camera-id cam1` needs a
+If the camera uses another camera ID, use the same ID in the scope and the
+URL. For example, a camera started with `--camera-id cam1` needs a
 `stream:cam1` ticket and is viewed at
 `/dev/cameras/cam1/stream?ticket=...`. A ticket for one camera does not
 work for another.
@@ -263,30 +268,36 @@ replace `127.0.0.1` with the server Mac's LAN IP address, for example
 
 ## Troubleshooting
 
+### Counts are always empty
+
+The camera has no zones: it logs `failed to fetch zones` if it cannot read
+them, or `loaded 0 zone(s) from the API` if the `zone` table is empty. Seed a
+zone (`scripts/seed_dispatch.py`) or draw one in the dev page's zone editor.
+
 ### `no frames received yet for 'default'`
 
 The API has not received a frame for camera ID `default`. Check that:
 
-- The worker is running.
-- The worker is not using `--dry-run`.
-- The worker's camera ID matches the URL camera ID.
+- The camera is running.
+- The camera is not using `--dry-run`.
+- The camera's camera ID matches the URL camera ID.
 - `GET /dev/cameras/{cameraId}/stream` and `.../snapshot` return this `404`
   until the first frame arrives.
 - The webcam, video file, or RTSP source can be opened.
-- The worker is using the correct `API_BASE_URL`.
+- The camera is using the correct `API_BASE_URL`.
 
 ### `Could not open source`
 
-The worker cannot read the selected webcam, video file, or RTSP stream. Check
+The camera cannot read the selected webcam, video file, or RTSP stream. Check
 the source path, camera permissions, IP address, credentials, and RTSP path.
 
 ### `401 invalid internal api key`
 
-The API and worker are using different `INTERNAL_API_KEY` values, or the key
-is blank (a blank key rejects every worker call). Set the same non-blank value
+The API and camera are using different `INTERNAL_API_KEY` values, or the key
+is blank (a blank key rejects every camera call). Set the same non-blank value
 for both in `.env`, restart both processes, and try again.
 
-### `413 payload_too_large` or `422 validation_error` from a worker route
+### `413 payload_too_large` or `422 validation_error` from a camera route
 
 A frame body is limited to 5 MB; lower `--jpeg-quality` if frames are larger.
 A detections body may hold at most 50 zones, each count an integer from 0 to
@@ -300,7 +311,7 @@ token in the `Authorization` header does not work on the stream.
 
 ### The browser keeps loading with no image
 
-An MJPEG endpoint remains open by design. Check the worker terminal for source
+An MJPEG endpoint remains open by design. Check the camera terminal for source
 or HTTP errors. You can also inspect the response headers:
 
 ```bash
@@ -316,6 +327,6 @@ multipart/x-mixed-replace; boundary=frame
 
 ## Stop the local processes
 
-Press `Ctrl+C` in the worker terminal and the API terminal. Viewing the stream
+Press `Ctrl+C` in the camera terminal and the API terminal. Viewing the stream
 needs the database, because the admin login and the ticket check read the user
 from PostgreSQL; stop it with `make db-down` when done.

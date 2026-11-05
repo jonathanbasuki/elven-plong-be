@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from plong_elven.api.deps import get_current_user, get_session_factory
 from plong_elven.api.main import app
-from plong_elven.db.models import Zone, ZoneCountHistory
+from plong_elven.db.models import Zone, ZoneLog
 from plong_elven.db.session import get_db
 from plong_elven.schemas.zones import CrowdOut, HistoryBucketOut
 from plong_elven.state.live_state import LiveState, get_live_state
@@ -27,13 +27,13 @@ class _HistorySession(FakeSession):
     async def scalars(self, stmt):
         self.statements.append(stmt)
         rows = [
-            ZoneCountHistory(
+            ZoneLog(
                 zone_id="z1",
                 bucket_start=datetime(2026, 11, 3, 12, 5, tzinfo=UTC),
                 avg_count=5.5,
                 peak_count=8,
             ),
-            ZoneCountHistory(
+            ZoneLog(
                 zone_id="z1",
                 bucket_start=datetime(2026, 11, 3, 12, 0, tzinfo=UTC),
                 avg_count=3.0,
@@ -45,6 +45,8 @@ class _HistorySession(FakeSession):
 
 class _ZoneListSession(FakeSession):
     async def scalars(self, stmt):
+        if stmt.column_descriptions[0]["entity"] is not Zone:
+            return await super().scalars(stmt)  # the task-expiry sweep finds none
         zone = await self.get(Zone, "z1")
         return type("R", (), {"all": lambda self: [zone]})()
 
@@ -75,7 +77,7 @@ def test_crowd_uses_latest_detection_count(client_as, internal_headers) -> None:
     client = client_as("floor_staff")
     detection = client.post(
         "/api/v1/cameras/cam1/detections",
-        json={"counts": {"z1": 7}},
+        json={"counts": {"z1": 12}},
         headers=internal_headers,
     )
     response = client.get("/api/v1/zones/z1/crowd")
@@ -83,8 +85,8 @@ def test_crowd_uses_latest_detection_count(client_as, internal_headers) -> None:
     assert detection.status_code == 200
     assert response.status_code == 200
     body = response.json()
-    assert body["count"] == 7
-    assert body["status"] == "warning"
+    assert body["count"] == 12
+    assert body["status"] == "crowded"
     assert body["zoneId"] == "z1"
     assert body["observedAt"].endswith("Z")
 
@@ -141,9 +143,12 @@ def test_zone_payload_has_no_live_fields(client_as) -> None:
     response = client_as("floor_staff", live=live).get("/api/v1/zones/z1")
 
     assert response.status_code == 200
-    assert set(response.json()) == {"zoneId", "name", "mapImageUrl", "polygon"}
-    assert response.json()["zoneId"] == "z1"
-    assert response.json()["polygon"] == [[0.0, 0.0], [1.0, 1.0]]
+    assert response.json() == {
+        "zoneId": "z1",
+        "name": "Main Lobby",
+        "threshold": 10,
+        "isActiveTask": False,
+    }
 
 
 def test_list_zones_returns_zone_payloads(client_as) -> None:
@@ -157,8 +162,8 @@ def test_list_zones_returns_zone_payloads(client_as) -> None:
         {
             "zoneId": "z1",
             "name": "Main Lobby",
-            "mapImageUrl": "https://example.com/main-lobby.png",
-            "polygon": [[0.0, 0.0], [1.0, 1.0]],
+            "threshold": 10,
+            "isActiveTask": False,
         }
     ]
 

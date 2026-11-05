@@ -31,12 +31,12 @@ admin         (id 3)
 Roles do not inherit. Authentication per route group:
 
 - `POST /api/v1/auth/{login,refresh,logout}`: no access token.
-- `/api/v1/cameras/{cameraId}/...` (CCTV worker routes): the
+- `/api/v1/cameras/{cameraId}/...` (camera routes): the
   `X-Internal-Api-Key` header, not a user token.
 - `WS /api/v1/crowd/live`: a bearer access token, or `?ticket=` with scope
   `crowd:live`.
 - Every other `/api/v1/*` route: a bearer access token for any role.
-- `POST /api/v1/broadcasts` and `.../finish` need `ops_manager`; `.../accept`
+- `POST /api/v1/tasks/broadcast` and `.../finish` need `ops_manager`; `.../accept`
   and `.../complete` need `floor_staff`. `admin` has no dispatch powers.
 - `/dev/*` exists only with `APP_ENV=dev`. The page `GET /dev/cameras/{cameraId}`
   needs no login; `GET /dev/cameras/{cameraId}/stream` needs a
@@ -74,7 +74,7 @@ For any value other than `dev`, the API refuses to start when `JWT_SECRET` or
 `INTERNAL_API_KEY` is shorter than 32 characters. With `APP_ENV=dev` it starts,
 but every call that signs or checks a token fails with `503 auth_not_configured`
 until `JWT_SECRET` has at least 32 characters. A blank `INTERNAL_API_KEY`
-rejects every worker call with `401`, even in dev.
+rejects every camera call with `401`, even in dev.
 
 Do not commit `.env`, passwords, JWT secrets, refresh tokens, or other local
 credentials.
@@ -127,8 +127,9 @@ users
 refresh_tokens
 ```
 
-The same run also creates `zones`, `broadcasts`, `broadcast_responses`,
-`zone_count_history` and `alembic_version`.
+The same run also creates `user_status`, `zone`, `zone_logs`, `task`,
+`task_status`, `task_respondents`, `task_respondent_status` and
+`alembic_version`.
 
 The migrations seed three roles. `admin` comes from revision `a1b2c3d4e5f6`,
 so run `make db-migrate` again after pulling it:
@@ -183,7 +184,7 @@ uv run --env-file .env python scripts/create_user.py \
 
 For local dispatch testing, `scripts/seed_dispatch.py` seeds one admin
 (`admin@plongelven.io`), one manager (`manager@plongelven.io`) and three
-floor-staff users, plus the first zone in `zones.json` (or `ZONES_PATH`). All
+floor-staff users, plus zone `z1`. All
 seeded users share the password `password123`. Existing rows are skipped:
 
 ```bash
@@ -418,7 +419,7 @@ belongs to a user that is missing or inactive. Refresh or log in again.
 ### `403 wrong_role`
 
 The token is valid but the user's role is not allowed on that route. Roles do
-not inherit, so `admin` cannot create or accept broadcasts.
+not inherit, so `admin` cannot broadcast or accept tasks.
 
 ### `Invalid refresh token`
 

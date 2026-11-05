@@ -15,14 +15,7 @@ from plong_elven.services.ports import Alert
 from plong_elven.state.live_state import LiveState
 
 T0 = datetime(2026, 11, 3, 12, 0, tzinfo=UTC)
-ZONE = Zone(
-    zone_id="z1",
-    name="Main Lobby",
-    map_image_url="u",
-    polygon=[],
-    warning_threshold=5,
-    crowded_threshold=10,
-)
+ZONE = Zone(zone_id="z1", name="Main Lobby", polygon=[], threshold=10)
 
 
 class _Tokens:
@@ -36,45 +29,49 @@ def _service(sender, rules=None, live=None):
 
 
 @pytest.mark.asyncio
-async def test_entering_warning_pushes_managers(fake_push_sender) -> None:
-    await _service(fake_push_sender).on_count(ZONE, 7, T0)
+async def test_reaching_threshold_pushes_managers(fake_push_sender) -> None:
+    await _service(fake_push_sender).on_count(ZONE, 12, T0)
     assert fake_push_sender.calls == [
         (
             ["tok-mgr"],
-            "Crowd warning",
-            "Main Lobby is getting busy (7 people detected).",
+            "Zone crowded — act now",
+            "Main Lobby is crowded (12 people). Broadcast a task now.",
         )
     ]
 
 
 @pytest.mark.asyncio
+async def test_below_threshold_is_safe_and_silent(fake_push_sender) -> None:
+    await _service(fake_push_sender).on_count(ZONE, 9, T0)
+    assert fake_push_sender.calls == []
+
+
+@pytest.mark.asyncio
 async def test_same_status_does_not_repeat(fake_push_sender) -> None:
     svc = _service(fake_push_sender)
-    await svc.on_count(ZONE, 7, T0)
-    await svc.on_count(ZONE, 8, T0 + timedelta(seconds=1))
+    await svc.on_count(ZONE, 12, T0)
+    await svc.on_count(ZONE, 13, T0 + timedelta(seconds=1))
     assert len(fake_push_sender.calls) == 1
 
 
 @pytest.mark.asyncio
-async def test_flapping_back_into_warning_within_cooldown_is_suppressed(
+async def test_flapping_back_into_crowded_within_cooldown_is_suppressed(
     fake_push_sender,
 ) -> None:
     svc = _service(fake_push_sender)
-    await svc.on_count(ZONE, 7, T0)
-    await svc.on_count(ZONE, 2, T0 + timedelta(seconds=1))
-    await svc.on_count(ZONE, 7, T0 + timedelta(minutes=4))
+    await svc.on_count(ZONE, 10, T0)
+    await svc.on_count(ZONE, 9, T0 + timedelta(seconds=1))
+    await svc.on_count(ZONE, 10, T0 + timedelta(minutes=4))
     assert len(fake_push_sender.calls) == 1
-    await svc.on_count(ZONE, 2, T0 + timedelta(minutes=5))
-    await svc.on_count(ZONE, 7, T0 + timedelta(minutes=5, seconds=1))
+    await svc.on_count(ZONE, 9, T0 + timedelta(minutes=5))
+    await svc.on_count(ZONE, 10, T0 + timedelta(minutes=5, seconds=1))
     assert len(fake_push_sender.calls) == 2
 
 
-@pytest.mark.asyncio
-async def test_escalation_to_crowded_is_never_throttled(fake_push_sender) -> None:
-    svc = _service(fake_push_sender)
-    await svc.on_count(ZONE, 7, T0)
-    await svc.on_count(ZONE, 12, T0 + timedelta(seconds=1))
-    assert fake_push_sender.calls[1][1] == "Zone crowded — act now"
+def test_only_a_crowded_rule_by_default() -> None:
+    (rule,) = default_alert_rules()
+    assert rule.evaluate(ZONE, 10, "safe").key == "crowded"
+    assert rule.evaluate(ZONE, 9, None) is None
 
 
 @pytest.mark.asyncio

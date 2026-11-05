@@ -1,8 +1,7 @@
 # Frontend guide: what the API does and how to call it
 
 For the iOS team. Every fact here comes from the backend code. The full route
-list is in [API_REFERENCE.md](API_REFERENCE.md). The change list from the old
-API is in [API_V1_MIGRATION.md](API_V1_MIGRATION.md).
+list is in [API_REFERENCE.md](API_REFERENCE.md).
 
 Items marked **TBD** could not be checked from this repo.
 
@@ -14,21 +13,24 @@ The app uses **15 routes and 1 WebSocket**. All of them are under `/api/v1`.
 |---|---|---|
 | Login | Sign in, keep the session alive, sign out | `POST /auth/login`, `/auth/refresh`, `/auth/logout` |
 | Profile | Show who I am, register the phone for pushes | `GET /profile`, `PUT /profile/push-token` |
-| Zones | Show the list of zones and their map | `GET /zones`, `GET /zones/{zoneId}` |
+| Zones | Show the list of zones and whether each has a task running | `GET /zones`, `GET /zones/{zoneId}` |
 | Crowd | Show how many people are in a zone now, and the past hour | `GET /zones/{zoneId}/crowd`, `GET /zones/{zoneId}/crowd/history`, `WS /crowd/live` |
-| Broadcasts | Manager asks for staff, staff accept and finish | `GET /broadcasts`, `POST /broadcasts`, `POST /broadcasts/{id}/accept`, `/complete`, `/finish` |
+| Tasks | Manager broadcasts a task, staff accept and complete, manager finishes | `GET /tasks`, `POST /tasks/broadcast`, `POST /tasks/{id}/accept`, `/complete`, `/finish` |
 | Staff | Look up one staff member | `GET /staff/{staffId}` |
 
 The app does **not** call these. Do not build against them:
 
 | Routes | Who uses them | Why not the app |
 |---|---|---|
-| `POST /api/v1/cameras/{cameraId}/…` | The camera program (YOLO worker) | Needs a secret key, not a login |
+| `/api/v1/cameras/{cameraId}/…` | The camera program (YOLO detection) | Needs a secret key, not a login |
 | `/dev/…` | A developer's browser | Exists only when the server runs with `APP_ENV=dev` |
 | `GET /healthz`, `GET /readyz` | Monitoring | Not app features |
 
 **Live video does not come from this API.** The app plays HLS from MediaMTX.
 See [SETUP_HLS.md](SETUP_HLS.md).
+
+**Zone shapes do not come from this API either.** The app draws each zone on
+its own floorplan and matches it to the API by `zoneId`.
 
 ## 2. Rules for every call
 
@@ -36,9 +38,9 @@ See [SETUP_HLS.md](SETUP_HLS.md).
 |---|---|
 | Base URL | `http://<server>:8080` in dev (port from the `make api` target). Production URL: **TBD** |
 | Body | JSON, with `Content-Type: application/json` |
-| Field names | camelCase everywhere (`accessToken`, `zoneId`, `staffNeeded`) |
+| Field names | camelCase everywhere (`accessToken`, `zoneId`, `totalStaff`) |
 | Times | UTC, always end in `Z`, like `2026-11-03T10:15:30Z` |
-| Ids | `broadcastId` and `staffId` are UUIDs. `zoneId` is a short string like `z1` |
+| Ids | `taskId` and `staffId` are UUIDs. `zoneId` is a short string like `z1` |
 | Login header | `Authorization: Bearer <accessToken>` on every route except login, refresh and logout |
 | Unknown fields | Old snake_case bodies (`refresh_token`) get `422`. Send camelCase only |
 
@@ -47,18 +49,19 @@ See [SETUP_HLS.md](SETUP_HLS.md).
 Every error has the same shape. Read `error.code`, not the message text.
 
 ```json
-{"error": {"code": "slots_full", "message": "This broadcast already has enough staff."}}
+{"error": {"code": "slots_full", "message": "This task already has enough staff."}}
 ```
 
 | HTTP | `error.code` | What the app should do |
 |---|---|---|
 | 401 | `unauthenticated` | Token missing or expired. Refresh once, then retry. If refresh fails, go to the login screen. |
 | 403 | `wrong_role` | This user's role may not do this. Hide the button for that role. |
-| 403 | `not_your_response` | The staff member did not accept this broadcast. |
-| 404 | `not_found` | Unknown zone, broadcast or staff id. |
-| 409 | `broadcast_open` | The zone already has an open broadcast. Show it instead. |
+| 403 | `not_your_response` | The staff member did not accept this task. |
+| 404 | `not_found` | Unknown zone, task or staff id. |
+| 409 | `broadcast_open` | The zone already has a task running. Show it instead. |
 | 409 | `expired` | Too late to accept. Refresh the list. |
-| 409 | `already_delegating` | This staff member is already on another broadcast. |
+| 409 | `own_zone` | This is the staff member's own home zone; tasks are for staff from other zones. |
+| 409 | `already_delegating` | This staff member is already on another task. |
 | 409 | `slots_full` | Enough staff accepted already. |
 | 409 | `not_all_done` | Manager tried to finish before every accepted staff completed. |
 | 422 | `validation_error` | The request body or query is wrong. The message names the field. |
@@ -72,11 +75,11 @@ There are three roles. They do not inherit from each other.
 |---|---|---|---|
 | Log in, profile, push token | yes | yes | yes |
 | Read zones, crowd, history, staff | yes | yes | yes |
-| Read broadcasts | yes | yes | yes |
-| Create a broadcast | no | **yes** | no |
-| Accept a broadcast | **yes** | no | no |
-| Complete a broadcast | **yes** | no | no |
-| Finish a broadcast | no | **yes** | no |
+| Read tasks | yes | yes | yes |
+| Broadcast a task | no | **yes** | no |
+| Accept a task | **yes** | no | no |
+| Complete a task | **yes** | no | no |
+| Finish a task | no | **yes** | no |
 
 The role is in the login response (`user.role`) and in `GET /profile`.
 
@@ -175,8 +178,8 @@ Who gets a push:
 
 | Event | Who gets it |
 |---|---|
-| A manager creates a broadcast | All `floor_staff` with a push token |
-| A zone becomes `warning` or `crowded` | All `ops_manager` with a push token |
+| A manager broadcasts a task | All `floor_staff` with a push token, except those whose home zone is the task's zone |
+| A zone becomes `crowded` | All `ops_manager` with a push token |
 
 More detail: [PUSH_NOTIFICATIONS.md](PUSH_NOTIFICATIONS.md).
 
@@ -189,17 +192,14 @@ curl http://localhost:8080/api/v1/zones -H 'Authorization: Bearer <accessToken>'
 ```
 
 ```json
-[
-  {
-    "zoneId": "z1",
-    "name": "Main gate",
-    "mapImageUrl": "https://…",
-    "polygon": [[0.1, 0.2], [0.4, 0.2], [0.4, 0.6], [0.1, 0.6]]
-  }
-]
+[{"zoneId": "z1", "name": "Main gate", "threshold": 10, "isActiveTask": false}]
 ```
 
-`polygon` points are `[x, y]` as fractions of the camera picture, from 0 to 1.
+| Field | Meaning |
+|---|---|
+| `threshold` | At or above this many people the zone is `crowded` |
+| `isActiveTask` | `true` while a task is running in this zone. A manager cannot broadcast again until it is `false` |
+
 `GET /zones/{zoneId}` returns one zone with the same fields.
 
 ### Current crowd in a zone
@@ -209,13 +209,13 @@ curl http://localhost:8080/api/v1/zones/z1/crowd -H 'Authorization: Bearer <acce
 ```
 
 ```json
-{"zoneId": "z1", "count": 7, "status": "warning", "observedAt": "2026-11-03T10:15:30Z"}
+{"zoneId": "z1", "count": 12, "status": "crowded", "observedAt": "2026-11-03T10:15:30Z"}
 ```
 
 | Field | Meaning |
 |---|---|
 | `count` | People counted in the last detection |
-| `status` | `safe`, `warning` or `crowded`. The thresholds are per zone, set on the server |
+| `status` | `safe` (below the zone's `threshold`) or `crowded` (at or above it) |
 | `observedAt` | When the camera program last reported. `null` if it has not reported since the server started |
 
 The count is held in server memory. After a server restart it is empty until
@@ -254,67 +254,78 @@ The server sends one message each time the camera program reports counts:
 - There is no replay. After a reconnect, call `GET /zones/{zoneId}/crowd` once.
 - Whether the iOS app uses this socket today: **TBD**. Polling `/crowd` also works.
 
-## 7. Broadcasts: the dispatch flow
+## 7. Tasks
 
-A manager asks for staff in a zone. Floor staff accept. When the job is done,
-each one completes. Then the manager finishes it.
+A manager starts a task by **broadcasting** it: a request for staff from other
+zones to come and help in a crowded zone. Floor staff accept. When the job is
+done, each one completes. Then the manager finishes it.
 
 ```
-manager: POST /broadcasts ──> status "open"  (push to all floor staff)
+manager: POST /tasks/broadcast ──> status "open"  (push to floor staff from other zones)
                                   │
-   staff: POST /broadcasts/{id}/accept   (repeat until staffNeeded is reached)
+   staff: POST /tasks/{id}/accept   (repeat until totalStaff is reached)
                                   │
-                      20 seconds after creation ──> status "closed"
+                      20 seconds after the broadcast ──> status "closed"
                                   │
-   staff: POST /broadcasts/{id}/complete   (each accepted staff member)
+   staff: POST /tasks/{id}/complete   (each accepted staff member)
                                   │
-manager: POST /broadcasts/{id}/finish ──> status "finished"
+manager: POST /tasks/{id}/finish ──> status "finished"
 ```
 
-| Status | Meaning |
+| Task `status` | Meaning |
 |---|---|
 | `open` | Staff can still accept |
 | `closed` | The 20 seconds ran out. Accepted staff can still complete |
 | `finished` | The manager closed it |
 
-A broadcast lives **20 seconds** (`expiresAt`). The server changes it to
-`closed` the next time someone reads or changes broadcasts. There is no
+Each accepted staff member also has their own `status` in `acceptedStaff`:
+`ongoing` after accepting, `completed` after completing.
+
+A task takes acceptances for **20 seconds** (`expiresAt`). The server changes it
+to `closed` the next time someone reads or changes tasks or zones. There is no
 background timer, so always read `expiresAt` and `status` from the response.
 
-### The broadcast object
+The zone's `isActiveTask` stays `true` from the broadcast until the task is
+finished. If nobody accepted within the 20 seconds, the zone is freed when the
+task closes. Staff whose **home zone** is the task's zone get no push and
+cannot accept (`409 own_zone`).
+
+### The task object
 
 ```json
 {
-  "broadcastId": "7d8e1c34-5d0b-4f0e-8e0d-1a7f0f6b2c11",
+  "taskId": "7d8e1c34-5d0b-4f0e-8e0d-1a7f0f6b2c11",
   "zoneId": "z1",
   "status": "open",
-  "staffNeeded": 2,
+  "totalStaff": 2,
+  "instruction": "Guide people to exit B",
   "expiresAt": "2026-11-03T10:16:10Z",
   "acceptedCount": 1,
   "completedCount": 0,
   "acceptedStaff": [
-    {"staffId": "a1b2…", "name": "Sam Staff", "completedAt": null}
+    {"staffId": "a1b2…", "name": "Sam Staff", "status": "ongoing", "completedAt": null}
   ]
 }
 ```
 
-### Manager: create (`ops_manager`)
+### Manager: broadcast a task (`ops_manager`)
 
 ```bash
-curl -X POST http://localhost:8080/api/v1/broadcasts \
+curl -X POST http://localhost:8080/api/v1/tasks/broadcast \
   -H 'Authorization: Bearer <accessToken>' \
   -H 'Content-Type: application/json' \
-  -d '{"zoneId": "z1", "staffNeeded": 2}'
+  -d '{"zoneId": "z1", "totalStaff": 2, "instruction": "Guide people to exit B"}'
 ```
 
-Returns `201` with the broadcast object. `staffNeeded` must be above 0.
-Errors: `404` unknown zone, `409 broadcast_open` if the zone already has an
-open broadcast.
+Returns `201` with the task object. `totalStaff` must be above 0.
+`instruction` is required, 1 to 50 characters; it is shown to staff in the push.
+Errors: `404` unknown zone, `409 broadcast_open` if the zone already has a task
+running.
 
 ### Anyone: list and find the open one
 
 ```bash
-curl 'http://localhost:8080/api/v1/broadcasts?zoneId=z1&status=open' \
+curl 'http://localhost:8080/api/v1/tasks?zoneId=z1&status=open' \
   -H 'Authorization: Bearer <accessToken>'
 ```
 
@@ -325,36 +336,37 @@ means nothing is open.
 ### Staff: accept (`floor_staff`)
 
 ```bash
-curl -X POST http://localhost:8080/api/v1/broadcasts/<broadcastId>/accept \
+curl -X POST http://localhost:8080/api/v1/tasks/<taskId>/accept \
   -H 'Authorization: Bearer <accessToken>'
 ```
 
-Returns the updated broadcast. Calling it twice as the same user is safe.
-Errors: `409 expired`, `409 already_delegating`, `409 slots_full`.
+Returns the updated task. Calling it twice as the same user is safe.
+Errors: `409 expired`, `409 own_zone`, `409 already_delegating`, `409 slots_full`.
 
 ### Staff: complete (`floor_staff`)
 
 ```bash
-curl -X POST http://localhost:8080/api/v1/broadcasts/<broadcastId>/complete \
+curl -X POST http://localhost:8080/api/v1/tasks/<taskId>/complete \
   -H 'Authorization: Bearer <accessToken>'
 ```
 
-Returns the updated broadcast, with your `completedAt` set. Only a staff member
-who accepted it can complete it (`403 not_your_response`).
+Returns the updated task, with your entry's `status` `completed` and
+`completedAt` set. Only a staff member who accepted it can complete it
+(`403 not_your_response`).
 
 ### Manager: finish (`ops_manager`)
 
 ```bash
-curl -X POST http://localhost:8080/api/v1/broadcasts/<broadcastId>/finish \
+curl -X POST http://localhost:8080/api/v1/tasks/<taskId>/finish \
   -H 'Authorization: Bearer <accessToken>'
 ```
 
 ```json
-{"broadcastId": "7d8e…", "status": "finished", "finishedAt": "2026-11-03T10:18:00Z"}
+{"taskId": "7d8e…", "status": "finished", "finishedAt": "2026-11-03T10:18:00Z"}
 ```
 
 Works only after every accepted staff member completed (`409 not_all_done`).
-It works on both `open` and `closed` broadcasts.
+It works on both `open` and `closed` tasks, and frees the zone.
 
 ## 8. Staff lookup
 
@@ -363,12 +375,12 @@ curl http://localhost:8080/api/v1/staff/<staffId> -H 'Authorization: Bearer <acc
 ```
 
 ```json
-{"staffId": "a1b2…", "name": "Sam Staff", "status": "idle"}
+{"staffId": "a1b2…", "name": "Sam Staff", "status": "idle", "zoneId": "z2"}
 ```
 
-`status` is `idle` or `delegating` (on a broadcast). `staffId` is a user id. The
-server does not check that this user is `floor_staff`. A bad id format gives
-`422`.
+`status` is `idle` or `delegating` (on a task). `zoneId` is the staff member's
+home zone, or `null`. `staffId` is a user id. The server does not check that
+this user is `floor_staff`. A bad id format gives `422`.
 
 ## 9. A Swift sketch
 

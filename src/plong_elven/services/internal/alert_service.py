@@ -5,12 +5,9 @@ types can be added by implementing AlertRule and adding to the rules list, witho
 modifying existing rule classes.
 
 Alert cooldowns prevent notification spam when counts hover near thresholds. A count
-hovering right at a threshold (e.g. 9/10/11 people) flips the classified status back
-and forth on every detection, and each flip is a "transition" that would otherwise
-re-fire a push — including repeatedly re-entering "crowded" with a different count
-each time. Both statuses get the same cooldown on repeating themselves; a transition
-to a *different* status (e.g. warning -> crowded) is never throttled, so an
-escalation always still fires instantly.
+hovering right at the threshold (e.g. 9/10/11 people) flips the classified status
+between safe and crowded on every detection, and each re-entry into "crowded" is a
+"transition" that would otherwise re-fire a push. The cooldown throttles that.
 """
 
 from datetime import datetime, timedelta
@@ -25,9 +22,7 @@ from plong_elven.state.live_state import LiveState
 class StatusChangeRule:
     """Alert rule that fires when a zone transitions into a specific status.
 
-    This is today's alert logic extracted into a reusable rule class. The existing
-    'warning' and 'crowded' alerts are two instances of this class with different
-    parameters.
+    The 'crowded' alert is one instance of this class.
     """
 
     def __init__(
@@ -41,7 +36,7 @@ class StatusChangeRule:
         """Initialize a status change rule.
 
         Args:
-            status: The status that triggers this alert (e.g. "warning", "crowded")
+            status: The status that triggers this alert (e.g. "crowded")
             cooldown: Minimum time between alerts of this type for the same zone,
                       or None if no cooldown applies
             audience_role: The role name whose users should receive this alert
@@ -62,7 +57,7 @@ class StatusChangeRule:
         Returns an Alert only when the zone newly transitions into this rule's
         target status (not when it stays in the same status).
         """
-        current_status = classify(count, zone.warning_threshold, zone.crowded_threshold)
+        current_status = classify(count, zone.threshold)
         if current_status != self._status:
             return None
         if current_status == previous_status:
@@ -77,26 +72,15 @@ class StatusChangeRule:
 
 
 def default_alert_rules() -> list[AlertRule]:
-    """Return the default alert rules matching today's behavior in detections.py.
-
-    Returns two StatusChangeRule instances:
-    - warning: fires when zone enters warning status (5 min cooldown)
-    - crowded: fires when zone enters crowded status (5 min cooldown)
-    """
+    """Return the default alert rules: one 'crowded' rule (5 min cooldown) that
+    pushes to ops managers when a zone reaches its threshold."""
     return [
-        StatusChangeRule(
-            status="warning",
-            cooldown=timedelta(minutes=5),
-            audience_role="ops_manager",
-            title="Crowd warning",
-            body_template="{zone} is getting busy ({count} people detected).",
-        ),
         StatusChangeRule(
             status="crowded",
             cooldown=timedelta(minutes=5),
             audience_role="ops_manager",
             title="Zone crowded — act now",
-            body_template="{zone} is crowded ({count} people). Dispatch staff immediately.",
+            body_template="{zone} is crowded ({count} people). Broadcast a task now.",
         ),
     ]
 
@@ -138,7 +122,7 @@ class AlertService:
         """
         zone_id = zone.zone_id
         previous = self._live.last_status.get(zone_id)
-        current_status = classify(count, zone.warning_threshold, zone.crowded_threshold)
+        current_status = classify(count, zone.threshold)
         self._live.last_status[zone_id] = current_status
 
         for rule in self._rules:

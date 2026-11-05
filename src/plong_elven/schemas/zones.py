@@ -1,7 +1,7 @@
 """Zone and crowd read DTOs (design §6.2). Field names are camelCase (P1)."""
 
 from datetime import UTC, datetime
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import AfterValidator, BaseModel
 
@@ -17,16 +17,19 @@ UtcDatetime = Annotated[datetime, AfterValidator(_as_utc)]
 
 
 class ZoneOut(BaseModel):
+    """The frontend draws the zone on its own floorplan and matches it by zoneId;
+    the camera polygon is not part of this contract."""
+
     zoneId: str
     name: str
-    mapImageUrl: str
-    polygon: list[list[float]]
+    threshold: int
+    isActiveTask: bool
 
 
 class CrowdOut(BaseModel):
     zoneId: str
     count: int
-    status: str
+    status: Literal["safe", "crowded"]
     observedAt: UtcDatetime | None
 
 

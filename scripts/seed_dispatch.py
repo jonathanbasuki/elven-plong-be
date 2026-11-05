@@ -1,20 +1,19 @@
-"""Seeds one zone (from zones.json) plus a manager and some staff users, for local
-dispatch testing. Safe to re-run: skips rows that already exist.
+"""Seeds one zone (a full-frame polygon; reshape it in the dev page's zone editor)
+plus a manager and some staff users, for local task testing. Safe to re-run:
+skips rows that already exist.
 
   uv run --env-file .env python scripts/seed_dispatch.py
 """
 
 import asyncio
-import os
 
 from argon2 import PasswordHasher
 from sqlalchemy import select
 
-from plong_elven.common.zones import load_config
 from plong_elven.db.models import Role, User, Zone
 from plong_elven.db.session import SessionFactory
 
-ZONES_PATH = os.environ.get("ZONES_PATH", "zones.json")
+ZONE = {"id": "z1", "name": "Zone 1", "polygon": [[0, 0], [1, 0], [1, 1], [0, 1]]}
 PASSWORD = "password123"  # same for every seeded user, local dev only
 
 USERS = [
@@ -28,8 +27,7 @@ USERS = [
 
 async def main() -> None:
     hasher = PasswordHasher()
-    cfg = load_config(ZONES_PATH)
-    zone_cfg = cfg["zones"][0]
+    zone_cfg = ZONE
 
     async with SessionFactory() as session:
         roles = {r.name: r for r in (await session.scalars(select(Role))).all()}
@@ -39,10 +37,8 @@ async def main() -> None:
                 Zone(
                     zone_id=zone_cfg["id"],
                     name=zone_cfg["name"],
-                    map_image_url="https://example.com/media/maps/placeholder.png",
                     polygon=zone_cfg["polygon"],
-                    warning_threshold=5,
-                    crowded_threshold=10,
+                    threshold=10,
                 )
             )
             print(f"seeded zone {zone_cfg['id']!r}")
@@ -56,7 +52,7 @@ async def main() -> None:
                 continue
             session.add(
                 User(
-                    role_id=roles[role_name].id,
+                    role_id=roles[role_name].role_id,
                     email=email,
                     password_hash=hasher.hash(PASSWORD),
                     full_name=full_name,

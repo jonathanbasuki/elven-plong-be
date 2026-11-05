@@ -6,13 +6,13 @@ preview on an iPhone connected to the same LAN as the Mac server.
 ```text
 Tapo camera --RTSP--> MediaMTX --HLS--> iPhone / iOS AVPlayer
                        |
-                       +--RTSP--> CCTV worker --> API detections
+                       +--RTSP--> camera process --> API detections
 ```
 
 MediaMTX serves the camera's original video. The API's
 `/dev/cameras/default/stream` (admin ticket, see
 [SETUP_CCTV.md](SETUP_CCTV.md) section 8) is a
-separate annotated preview produced by the worker; HLS does not depend on the
+separate annotated preview produced by the camera process; HLS does not depend on the
 API being online. That API preview exists only with `APP_ENV=dev`; in
 production the only video is this HLS feed. The iOS app always gets video from
 MediaMTX, never from the API.
@@ -143,9 +143,9 @@ The Plong app plays this feed through `AVPlayerViewController` with
 pause/scrub bar. This keeps the preview always live — a manager can't pause it
 and mistake a frozen frame for the current state.
 
-## 7. Run the API and CCTV worker
+## 7. Run the API and the camera process
 
-HLS playback itself does not require the API or detection worker. Start them if
+HLS playback itself does not require the API or the camera process. Start them if
 you also want detection counts and the annotated API preview.
 
 In separate terminals:
@@ -158,12 +158,12 @@ make api
 make cctv-relay
 ```
 
-The worker reads the RTSP relay from MediaMTX and posts detection data and
+The camera process reads the RTSP relay from MediaMTX and posts detection data and
 annotated/raw preview frames to the API. The HLS URL remains available if the
 API is stopped, as long as MediaMTX and the CCTV camera remain online.
 
-`make cctv-relay` runs the worker with `--camera-id default --zones zones.json`,
-so create `zones.json` first (`cp zones.example.json zones.json`).
+`make cctv-relay` runs the camera process with `--camera-id default`. It reads
+its zones from the API, so start the API and seed a zone first.
 
 The annotated API preview is separate and dev only. Open it from the dev page
 (`APP_ENV=dev`, admin login), or with a `stream:default` ticket as in
@@ -187,6 +187,6 @@ http://127.0.0.1:8080/dev/cameras/default/stream?ticket=<ticket>
 
 ## Stop services
 
-Stop the worker and API with `Ctrl+C` in their terminals. Stop MediaMTX with
+Stop the camera process and API with `Ctrl+C` in their terminals. Stop MediaMTX with
 `Ctrl+C` in its terminal. The `--rm` Docker option removes the container after
 it stops; it does not alter camera settings or source code.

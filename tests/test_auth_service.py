@@ -24,14 +24,14 @@ def strong_secret(monkeypatch):
 
 def _user() -> User:
     return User(
-        id=uuid4(),
+        user_id=uuid4(),
         role_id=1,
-        role=Role(id=1, name="floor_staff"),
+        role=Role(role_id=1, name="floor_staff"),
         email="a@b.io",
         password_hash="x",
         full_name="A",
         is_active=True,
-        status="idle",
+        user_status_id=1,
     )
 
 

@@ -17,7 +17,7 @@ class _UserSession:
         self.user = user
 
     async def get(self, model, key, **kw):
-        return self.user if key == self.user.id else None
+        return self.user if key == self.user.user_id else None
 
     async def execute(self, stmt):
         user = self.user

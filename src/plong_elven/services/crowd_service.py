@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from plong_elven.db.models import Zone, ZoneCountHistory
+from plong_elven.db.models import Zone, ZoneLog
 from plong_elven.helpers.zone_status import classify
 from plong_elven.schemas.zones import CrowdOut, HistoryBucketOut
 from plong_elven.services.errors import AppError
@@ -52,18 +52,16 @@ class CrowdService:
         """Accumulate one sample into the zone's current 5-minute window.
 
         When a sample from a new window arrives, the previous window is flushed
-        to zone_count_history. There's no timer — a window with no further
-        detections after it closes just sits in memory until the next sample
-        for that zone rolls it over.
-
-        Moved verbatim from _record_count_sample in api/detections.py:84-112.
+        to zone_logs. There's no timer — a window with no further detections
+        after it closes just sits in memory until the next sample for that zone
+        rolls it over.
         """
         start = _bucket_start(now)
         bucket = self._live.buckets.get(zone_id)
         if bucket is not None and bucket.start != start:
             if bucket.n > 0:
                 self._session.add(
-                    ZoneCountHistory(
+                    ZoneLog(
                         zone_id=zone_id,
                         bucket_start=bucket.start,
                         avg_count=round(bucket.avg, 2),
@@ -109,7 +107,7 @@ class CrowdService:
         return CrowdOut(
             zoneId=zone.zone_id,
             count=count,
-            status=classify(count, zone.warning_threshold, zone.crowded_threshold),
+            status=classify(count, zone.threshold),
             observedAt=self._live.observed_at.get(zone_id),
         )
 
@@ -119,9 +117,9 @@ class CrowdService:
         An unknown zone has no rows, so it returns [] (unchanged from Stage 1).
         """
         rows = await self._session.scalars(
-            select(ZoneCountHistory)
-            .where(ZoneCountHistory.zone_id == zone_id)
-            .order_by(ZoneCountHistory.bucket_start.desc())
+            select(ZoneLog)
+            .where(ZoneLog.zone_id == zone_id)
+            .order_by(ZoneLog.bucket_start.desc())
             .limit(limit)
         )
         return [
@@ -148,7 +146,7 @@ async def process_counts_in_new_session(
 ) -> None:
     """Background task that opens its own session for count processing.
 
-    This function is scheduled by the detection router's background_tasks.
+    This function is scheduled by the camera route's background_tasks.
     It opens a fresh session from the factory so it never depends on the
     request session, which may be closed by the time the background work runs.
 

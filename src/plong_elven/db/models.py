@@ -1,4 +1,5 @@
 from datetime import datetime
+from enum import IntEnum
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
@@ -12,6 +13,7 @@ from sqlalchemy import (
     Integer,
     SmallInteger,
     String,
+    Text,
     UniqueConstraint,
     func,
     text,
@@ -21,11 +23,31 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from plong_elven.db.base import Base
 
+# Lookup-table ids. Seeded by migration 5c8d2e1f9a63 and fixed: the code and the
+# partial index `one_open_task_per_zone` compare against these values. The API
+# exposes the lowercase member name ("open", "ongoing", "idle", ...).
+
+
+class TaskStatusId(IntEnum):
+    OPEN = 1
+    CLOSED = 2
+    FINISHED = 3
+
+
+class TaskRespondentStatusId(IntEnum):
+    ONGOING = 1
+    COMPLETED = 2
+
+
+class UserStatusId(IntEnum):
+    IDLE = 1
+    DELEGATING = 2
+
 
 class Role(Base):
     __tablename__ = "roles"
 
-    id: Mapped[int] = mapped_column(SmallInteger, primary_key=True)
+    role_id: Mapped[int] = mapped_column(SmallInteger, primary_key=True)
     name: Mapped[str] = mapped_column(String(32), unique=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
@@ -34,42 +56,80 @@ class Role(Base):
     users: Mapped[list["User"]] = relationship(back_populates="role")
 
 
+class UserStatus(Base):
+    __tablename__ = "user_status"
+
+    user_status_id: Mapped[int] = mapped_column(SmallInteger, primary_key=True)
+    name: Mapped[str] = mapped_column(String(32), unique=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class TaskStatus(Base):
+    __tablename__ = "task_status"
+
+    task_status_id: Mapped[int] = mapped_column(SmallInteger, primary_key=True)
+    name: Mapped[str] = mapped_column(String(32), unique=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class TaskRespondentStatus(Base):
+    __tablename__ = "task_respondent_status"
+
+    task_respondent_status_id: Mapped[int] = mapped_column(
+        SmallInteger, primary_key=True
+    )
+    name: Mapped[str] = mapped_column(String(32), unique=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
 class User(Base):
     __tablename__ = "users"
     __table_args__ = (
         Index("uq_users_email_lower", text("lower(email)"), unique=True),
         Index("ix_users_role_id", "role_id"),
-        CheckConstraint("status IN ('idle', 'delegating')", name="users_status_check"),
     )
 
-    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     role_id: Mapped[int] = mapped_column(
-        SmallInteger, ForeignKey("roles.id", ondelete="RESTRICT"), nullable=False
+        SmallInteger, ForeignKey("roles.role_id", ondelete="RESTRICT"), nullable=False
     )
     email: Mapped[str] = mapped_column(String(255), nullable=False)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     full_name: Mapped[str] = mapped_column(String(120), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    email_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
+    # Dispatch fields (a floor_staff user is also "staff" for tasks).
+    user_status_id: Mapped[int] = mapped_column(
+        SmallInteger,
+        ForeignKey("user_status.user_status_id"),
+        nullable=False,
+        default=UserStatusId.IDLE,
+        server_default="1",
     )
-    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    # Dispatch fields (this is also "staff" for the delegation workflow): a
-    # floor_staff user's own id is what POST /broadcasts/{id}/respond etc. use.
-    status: Mapped[str] = mapped_column(
-        String, nullable=False, default="idle", server_default="idle"
+    push_token: Mapped[str | None] = mapped_column(Text)
+    # Home zone: staff are delegated from their own zone to a crowded one, so a
+    # task never notifies (or accepts) staff whose home zone is the task's zone.
+    zone_id: Mapped[str | None] = mapped_column(
+        Text, ForeignKey("zone.zone_id", ondelete="SET NULL")
     )
-    push_token: Mapped[str | None] = mapped_column(String)
+    # Last zone a beacon saw this user in. Not wired yet: always null for now.
+    last_location: Mapped[str | None] = mapped_column(
+        Text, ForeignKey("zone.zone_id", ondelete="SET NULL")
+    )
 
     role: Mapped[Role] = relationship(back_populates="users")
     refresh_tokens: Mapped[list["RefreshToken"]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
     )
-    broadcast_responses: Mapped[list["BroadcastResponse"]] = relationship(
+    task_responses: Mapped[list["TaskRespondent"]] = relationship(
         back_populates="staff"
     )
 
@@ -88,7 +148,7 @@ class RefreshToken(Base):
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     user_id: Mapped[UUID] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+        ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False
     )
     token_hash: Mapped[str] = mapped_column(CHAR(64), unique=True, nullable=False)
     expires_at: Mapped[datetime] = mapped_column(
@@ -105,45 +165,43 @@ class RefreshToken(Base):
 
 
 class Zone(Base):
-    __tablename__ = "zones"
-    __table_args__ = (
-        CheckConstraint("warning_threshold > 0", name="zones_warning_threshold_check"),
-        CheckConstraint(
-            "crowded_threshold > warning_threshold",
-            name="zones_crowded_threshold_check",
-        ),
-    )
+    __tablename__ = "zone"
+    __table_args__ = (CheckConstraint("threshold > 0", name="zone_threshold_check"),)
 
-    zone_id: Mapped[str] = mapped_column(String, primary_key=True)
-    name: Mapped[str] = mapped_column(String, nullable=False)
-    map_image_url: Mapped[str] = mapped_column(String, nullable=False)
+    zone_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    # Normalized 0..1 [x, y] points in the CAMERA frame; the camera process reads
+    # these to assign people to zones. The frontend draws its own floorplan shape.
     polygon: Mapped[list[list[float]]] = mapped_column(JSONB, nullable=False)
-    warning_threshold: Mapped[int] = mapped_column(Integer, nullable=False)
-    crowded_threshold: Mapped[int] = mapped_column(Integer, nullable=False)
+    # count < threshold -> "safe", otherwise "crowded".
+    threshold: Mapped[int] = mapped_column(Integer, nullable=False)
+    # True from a broadcast until that task is finished (or it closes with no
+    # respondents). While true, the zone cannot be broadcast again.
+    is_active_task: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
 
-    broadcasts: Mapped[list["Broadcast"]] = relationship(back_populates="zone")
+    tasks: Mapped[list["Task"]] = relationship(back_populates="zone")
 
 
-class ZoneCountHistory(Base):
+class ZoneLog(Base):
     """One row per zone per 5-minute window: avg/peak of the detected-person counts
-    the cctv worker posted during that window. Written by detections.py as windows
-    roll over, not by any endpoint directly."""
+    the camera posted during that window. Written by CrowdService as windows roll
+    over, not by any endpoint directly."""
 
-    __tablename__ = "zone_count_history"
+    __tablename__ = "zone_logs"
     __table_args__ = (
-        UniqueConstraint(
-            "zone_id", "bucket_start", name="uq_zone_count_history_zone_bucket"
-        ),
+        UniqueConstraint("zone_id", "bucket_start", name="uq_zone_logs_zone_bucket"),
     )
 
-    id: Mapped[UUID] = mapped_column(
+    zone_log_id: Mapped[UUID] = mapped_column(
         primary_key=True, default=uuid4, server_default=text("gen_random_uuid()")
     )
     zone_id: Mapped[str] = mapped_column(
-        String, ForeignKey("zones.zone_id"), nullable=False
+        String, ForeignKey("zone.zone_id", ondelete="CASCADE"), nullable=False
     )
     bucket_start: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
@@ -155,30 +213,32 @@ class ZoneCountHistory(Base):
     )
 
 
-class Broadcast(Base):
-    __tablename__ = "broadcasts"
+class Task(Base):
+    __tablename__ = "task"
     __table_args__ = (
-        CheckConstraint(
-            "status IN ('open', 'closed', 'finished')", name="broadcast_status_check"
-        ),
-        CheckConstraint("staff_needed > 0", name="broadcast_staff_needed_check"),
+        CheckConstraint("total_staff > 0", name="task_total_staff_check"),
         Index(
-            "one_open_broadcast_per_zone",
+            "one_open_task_per_zone",
             "zone_id",
             unique=True,
-            postgresql_where=text("status = 'open'"),
+            postgresql_where=text("task_status_id = 1"),
         ),
     )
 
-    broadcast_id: Mapped[UUID] = mapped_column(
+    task_id: Mapped[UUID] = mapped_column(
         primary_key=True, default=uuid4, server_default=text("gen_random_uuid()")
     )
     zone_id: Mapped[str] = mapped_column(
-        String, ForeignKey("zones.zone_id"), nullable=False
+        Text, ForeignKey("zone.zone_id"), nullable=False
     )
-    staff_needed: Mapped[int] = mapped_column(Integer, nullable=False)
-    status: Mapped[str] = mapped_column(
-        String, nullable=False, default="open", server_default="open"
+    total_staff: Mapped[int] = mapped_column(Integer, nullable=False)
+    instruction: Mapped[str] = mapped_column(String(50), nullable=False)
+    task_status_id: Mapped[int] = mapped_column(
+        SmallInteger,
+        ForeignKey("task_status.task_status_id"),
+        nullable=False,
+        default=TaskStatusId.OPEN,
+        server_default="1",
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
@@ -188,30 +248,37 @@ class Broadcast(Base):
     )
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
-    zone: Mapped[Zone] = relationship(back_populates="broadcasts")
-    responses: Mapped[list["BroadcastResponse"]] = relationship(
-        back_populates="broadcast", cascade="all, delete-orphan"
+    zone: Mapped[Zone] = relationship(back_populates="tasks")
+    respondents: Mapped[list["TaskRespondent"]] = relationship(
+        back_populates="task", cascade="all, delete-orphan"
     )
 
 
-class BroadcastResponse(Base):
-    __tablename__ = "broadcast_responses"
+class TaskRespondent(Base):
+    __tablename__ = "task_respondents"
     __table_args__ = (
         CheckConstraint(
             "completed_at IS NULL OR completed_at >= responded_at",
-            name="broadcast_response_completed_check",
+            name="task_respondents_completed_check",
         ),
-        Index("idx_broadcast_responses_broadcast", "broadcast_id"),
+        Index("idx_task_respondents_task", "task_id"),
     )
 
-    broadcast_id: Mapped[UUID] = mapped_column(
-        ForeignKey("broadcasts.broadcast_id"), primary_key=True
+    task_id: Mapped[UUID] = mapped_column(ForeignKey("task.task_id"), primary_key=True)
+    staff_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.user_id"), primary_key=True
     )
-    staff_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    task_respondent_status_id: Mapped[int] = mapped_column(
+        SmallInteger,
+        ForeignKey("task_respondent_status.task_respondent_status_id"),
+        nullable=False,
+        default=TaskRespondentStatusId.ONGOING,
+        server_default="1",
+    )
     responded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
-    broadcast: Mapped[Broadcast] = relationship(back_populates="responses")
-    staff: Mapped[User] = relationship(back_populates="broadcast_responses")
+    task: Mapped[Task] = relationship(back_populates="respondents")
+    staff: Mapped[User] = relationship(back_populates="task_responses")

@@ -1,13 +1,7 @@
 """Ported from plong-model/test_counter.py. Skipped unless the cctv group is installed.
 
-Uses an inline zone config rather than zones.json/zones.example.json: those are files
-meant for users to edit for a real deployment, not fixtures these assertions should
-depend on.
+Zones are the list the camera reads from GET /api/v1/cameras/{cameraId}/zones.
 """
-
-import json
-import os
-import tempfile
 
 import pytest
 
@@ -16,42 +10,36 @@ pytest.importorskip("cv2")
 
 from plong_elven.cctv import zones as z
 
-TWO_ZONE_CFG = {
-    "version": 1,
-    "anchor": "bottom_center",
-    "zones": [
-        {
-            "id": "z1",
-            "name": "Left",
-            "polygon": [[0.0, 0.0], [0.5, 0.0], [0.5, 1.0], [0.0, 1.0]],
-        },
-        {
-            "id": "z2",
-            "name": "Right",
-            "polygon": [[0.5, 0.0], [1.0, 0.0], [1.0, 1.0], [0.5, 1.0]],
-        },
-    ],
-}
+TWO_ZONES = [
+    {
+        "id": "z1",
+        "name": "Left",
+        "polygon": [[0.0, 0.0], [0.5, 0.0], [0.5, 1.0], [0.0, 1.0]],
+    },
+    {
+        "id": "z2",
+        "name": "Right",
+        "polygon": [[0.5, 0.0], [1.0, 0.0], [1.0, 1.0], [0.5, 1.0]],
+    },
+]
 
 
 def test_assign_handles_concave_zone_and_edges() -> None:
     # Concave "U" zone on a 100x100 frame: the notch (40..60 x, 0..60 y) is outside.
-    u = {
-        "zones": [
-            {
-                "polygon": [
-                    [0, 0],
-                    [0.4, 0],
-                    [0.4, 0.6],
-                    [0.6, 0.6],
-                    [0.6, 0],
-                    [1, 0],
-                    [1, 1],
-                    [0, 1],
-                ]
-            }
-        ]
-    }
+    u = [
+        {
+            "polygon": [
+                [0, 0],
+                [0.4, 0],
+                [0.4, 0.6],
+                [0.6, 0.6],
+                [0.6, 0],
+                [1, 0],
+                [1, 1],
+                [0, 1],
+            ]
+        }
+    ]
     polys = z.to_pixels(u, 100, 100)
     box = lambda cx, bottom: [cx - 5, bottom - 20, cx + 5, bottom]
     boxes = np.array(
@@ -68,7 +56,7 @@ def test_assign_handles_concave_zone_and_edges() -> None:
 
 
 def test_counts_scale_to_frame_size() -> None:
-    p = z.to_pixels(TWO_ZONE_CFG, 1920, 1080)
+    p = z.to_pixels(TWO_ZONES, 1920, 1080)
     assert p[1][1].tolist() == [1920, 0]
     box = lambda cx, bottom: [cx - 5, bottom - 20, cx + 5, bottom]
     zi = z.assign(
@@ -79,13 +67,8 @@ def test_counts_scale_to_frame_size() -> None:
     assert z.counts(zi, 2).tolist() == [1, 2]
 
 
-def test_config_round_trips_and_rejects_bad_anchor() -> None:
-    with tempfile.TemporaryDirectory() as d:
-        f = os.path.join(d, "z.json")
-        z.save_config(f, TWO_ZONE_CFG["zones"], "center")
-        assert z.load_config(f)["anchor"] == "center"
-
-        with open(f, "w") as fh:
-            json.dump({"anchor": "feet", "zones": []}, fh)
-        with pytest.raises(ValueError):
-            z.load_config(f)
+def test_no_zones_counts_nothing() -> None:
+    boxes = np.array([[0, 0, 10, 10]], np.float32)
+    assert (
+        z.counts(z.assign(boxes, z.to_pixels([], 100, 100), "center"), 0).tolist() == []
+    )

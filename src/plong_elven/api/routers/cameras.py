@@ -1,4 +1,5 @@
-"""Camera worker routes: the cctv worker posts counts and JPEG frames here.
+"""Camera routes: the camera process reads its zones and posts counts and JPEG
+frames here.
 
 Every route needs the X-Internal-Api-Key header (a blank configured key rejects
 every call, P2) and a cameraId matching CAMERA_ID_PATTERN (§6.7). Frame bodies
@@ -14,14 +15,17 @@ from plong_elven.api.deps import (
     get_alert_service,
     get_camera_service,
     get_session_factory,
+    get_zone_service,
     require_internal_key,
 )
 from plong_elven.api.routers.crowd import ingest_counts
 from plong_elven.schemas.common import CAMERA_ID_PATTERN
 from plong_elven.schemas.detections import DetectionIn
+from plong_elven.schemas.layout import CameraZonesOut
 from plong_elven.services.camera_service import CameraService
 from plong_elven.services.errors import AppError
 from plong_elven.services.internal.alert_service import AlertService
+from plong_elven.services.zone_service import ZoneService
 from plong_elven.state.live_state import LiveState, get_live_state
 
 MAX_FRAME_BYTES = 5 * 1024 * 1024
@@ -59,6 +63,16 @@ async def _read_capped_body(
             raise too_large()
         chunks.append(chunk)
     return b"".join(chunks)
+
+
+@router.get("/zones")
+async def get_camera_zones(
+    cameraId: str = Path(pattern=CAMERA_ID_PATTERN),
+    svc: ZoneService = Depends(get_zone_service),  # noqa: B008
+) -> CameraZonesOut:
+    """Zone polygons (camera frame, normalized 0..1). The camera polls this to
+    pick up zone edits. One shared zone set for every camera today."""
+    return CameraZonesOut(zones=await svc.camera_zones())
 
 
 @router.post("/detections")

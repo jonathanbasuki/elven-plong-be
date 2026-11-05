@@ -4,12 +4,12 @@ Ported from the deleted tests/test_stream.py and tests/test_zones_api.py, plus
 the admin-role and ticket checks that replace the old ?key= query parameter.
 """
 
-import json
 from contextlib import asynccontextmanager
 
 import pytest
 from conftest import TEST_INTERNAL_KEY, FakeSessionFactory, fake_db, fake_user
 from fastapi.testclient import TestClient
+from test_tasks import MemorySession
 
 from plong_elven.api.deps import get_current_user, get_db, get_session_factory
 from plong_elven.api.main import app
@@ -18,8 +18,14 @@ from plong_elven.state.live_state import LiveState, get_live_state
 
 JPEG = b"\xff\xd8fake-jpeg-bytes\xff\xd9"
 LAYOUT = {
-    "anchor": "center",
-    "zones": [{"id": "z1", "name": "Left", "polygon": [[0, 0], [0.5, 0], [0.5, 1]]}],
+    "zones": [
+        {
+            "id": "z1",
+            "name": "Left",
+            "polygon": [[0, 0], [0.5, 0], [0.5, 1]],
+            "threshold": 8,
+        }
+    ],
 }
 
 
@@ -28,7 +34,7 @@ class _UserSession:
         self.user = user
 
     async def get(self, model, key, **kw):
-        return self.user if key == self.user.id else None
+        return self.user if key == self.user.user_id else None
 
 
 @pytest.fixture
@@ -51,10 +57,12 @@ def admin(live):
 
 
 @pytest.fixture
-def zones_path(monkeypatch, tmp_path):
-    path = tmp_path / "zones.json"
-    monkeypatch.setenv("ZONES_PATH", str(path))
-    return path
+def zones_db(live):
+    """An empty zone table; the layout routes read and write it."""
+    session = MemorySession()
+    session.zones.clear()
+    app.dependency_overrides[get_db] = lambda: session
+    return session
 
 
 def _ticket(user, scope: str) -> str:
@@ -242,14 +250,14 @@ def test_stream_auth_session_is_closed_before_streaming(live, internal_headers) 
 # --- layout (was GET/PUT /zones/{camera_id}) ---
 
 
-def test_get_layout_defaults_when_file_missing(admin, zones_path) -> None:
+def test_get_layout_is_empty_without_zones(admin, zones_db) -> None:
     response = TestClient(app).get("/dev/cameras/cam1/layout")
 
     assert response.status_code == 200
-    assert response.json() == {"anchor": "bottom_center", "zones": []}
+    assert response.json() == {"zones": []}
 
 
-def test_put_then_get_layout_round_trips(admin, zones_path) -> None:
+def test_put_then_get_layout_round_trips_through_the_db(admin, zones_db) -> None:
     client = TestClient(app)
 
     put = client.put("/dev/cameras/cam1/layout", json=LAYOUT)
@@ -257,85 +265,105 @@ def test_put_then_get_layout_round_trips(admin, zones_path) -> None:
     assert put.json() == {"status": "ok", "zones": 1}
 
     get = client.get("/dev/cameras/cam1/layout")
-    assert get.json()["anchor"] == "center"
-    assert get.json()["zones"][0]["id"] == "z1"
-    assert json.loads(zones_path.read_text())["zones"][0]["name"] == "Left"
+    assert get.json() == LAYOUT
+    assert zones_db.zones["z1"].threshold == 8
 
 
 def _zone(**overrides) -> dict:
-    return {"id": "z1", "name": "Z", "polygon": [[0, 0], [1, 0], [1, 1]], **overrides}
+    return {
+        "id": "z1",
+        "name": "Z",
+        "polygon": [[0, 0], [1, 0], [1, 1]],
+        "threshold": 10,
+        **overrides,
+    }
 
 
 @pytest.mark.parametrize(
     "body",
     [
         pytest.param(
-            {"anchor": "bottom_center", "zones": [_zone(polygon=[[0, 0], [1, 1]])]},
+            {"zones": [_zone(polygon=[[0, 0], [1, 1]])]},
             id="two-point-polygon",
         ),
         pytest.param(
             {
-                "anchor": "bottom_center",
                 "zones": [_zone(polygon=[[0, 0], [1, 0], [1.5, 1]])],
             },
             id="point-out-of-bounds",
         ),
         pytest.param(
             {
-                "anchor": "bottom_center",
                 "zones": [_zone(polygon=[[0, 0], [1, 0], [1, 1, 1]])],
             },
             id="three-coordinate-point",
         ),
         pytest.param(
-            {"anchor": "bottom_center", "zones": [_zone(id="a/b")]},
+            {"zones": [_zone(id="a/b")]},
             id="bad-zone-id",
         ),
         pytest.param(
-            {"anchor": "bottom_center", "zones": [_zone(name="")]},
+            {"zones": [_zone(name="")]},
             id="empty-name",
         ),
         pytest.param(
             {
-                "anchor": "bottom_center",
                 "zones": [_zone(id=f"z{i}") for i in range(51)],
             },
             id="51-zones",
         ),
-        pytest.param({"anchor": "sideways", "zones": []}, id="bad-anchor"),
-        pytest.param({"zones": []}, id="missing-anchor"),
+        pytest.param({"zones": [_zone(threshold=0)]}, id="zero-threshold"),
+        pytest.param(
+            {"zones": [{k: v for k, v in _zone().items() if k != "threshold"}]},
+            id="missing-threshold",
+        ),
+        pytest.param({}, id="missing-zones"),
     ],
 )
-def test_put_layout_rejects_bad_input(admin, zones_path, body) -> None:
+def test_put_layout_rejects_bad_input(admin, zones_db, body) -> None:
     response = TestClient(app).put("/dev/cameras/cam1/layout", json=body)
 
     _assert_error(response, 422, "validation_error")
-    assert not zones_path.exists()
+    assert zones_db.commits == 0
 
 
-def test_put_layout_accepts_50_zones(admin, zones_path) -> None:
-    body = {"anchor": "bottom_center", "zones": [_zone(id=f"z{i}") for i in range(50)]}
+def test_put_layout_accepts_50_zones(admin, zones_db) -> None:
+    body = {"zones": [_zone(id=f"z{i}") for i in range(50)]}
 
     response = TestClient(app).put("/dev/cameras/cam1/layout", json=body)
 
     assert response.json() == {"status": "ok", "zones": 50}
+    assert len(zones_db.zones) == 50
 
 
-def test_get_layout_requires_auth(live, zones_path) -> None:
+def test_put_layout_refuses_to_delete_a_zone_with_tasks(admin, zones_db) -> None:
+    client = TestClient(app)
+    client.put(
+        "/dev/cameras/cam1/layout", json={"zones": [_zone(id="z1"), _zone(id="z2")]}
+    )
+    zones_db.add_task(zone_id="z2")
+
+    response = client.put("/dev/cameras/cam1/layout", json={"zones": [_zone(id="z1")]})
+
+    _assert_error(response, 409, "zone_in_use")
+    assert sorted(zones_db.zones) == ["z1", "z2"]
+
+
+def test_get_layout_requires_auth(live, zones_db) -> None:
     response = TestClient(app).get("/dev/cameras/cam1/layout")
 
     _assert_error(response, 401, "unauthenticated")
 
 
-def test_put_layout_requires_auth(live, zones_path) -> None:
+def test_put_layout_requires_auth(live, zones_db) -> None:
     response = TestClient(app).put("/dev/cameras/cam1/layout", json=LAYOUT)
 
     _assert_error(response, 401, "unauthenticated")
-    assert not zones_path.exists()
+    assert zones_db.commits == 0
 
 
 def test_put_layout_internal_key_no_longer_works(
-    live, zones_path, internal_headers
+    live, zones_db, internal_headers
 ) -> None:
     response = TestClient(app).put(
         "/dev/cameras/cam1/layout", json=LAYOUT, headers=internal_headers
@@ -346,7 +374,7 @@ def test_put_layout_internal_key_no_longer_works(
 
 @pytest.mark.parametrize("role", ["ops_manager", "floor_staff"])
 @pytest.mark.parametrize("method", ["GET", "PUT"])
-def test_layout_requires_admin(live, zones_path, role, method) -> None:
+def test_layout_requires_admin(live, zones_db, role, method) -> None:
     app.dependency_overrides[get_current_user] = lambda: fake_user(role)
 
     response = TestClient(app).request(
@@ -354,7 +382,7 @@ def test_layout_requires_admin(live, zones_path, role, method) -> None:
     )
 
     _assert_error(response, 403, "wrong_role")
-    assert not zones_path.exists()
+    assert zones_db.commits == 0
 
 
 # --- cameraId pattern and old routes ---
@@ -365,7 +393,7 @@ def test_layout_requires_admin(live, zones_path, role, method) -> None:
     [("GET", "layout"), ("PUT", "layout"), ("GET", "snapshot"), ("GET", "stream")],
 )
 @pytest.mark.parametrize("camera_id", ["a%22b", "a.b", "x" * 65])
-def test_bad_camera_id_is_422(admin, zones_path, method, suffix, camera_id) -> None:
+def test_bad_camera_id_is_422(admin, zones_db, method, suffix, camera_id) -> None:
     response = TestClient(app).request(
         method,
         f"/dev/cameras/{camera_id}/{suffix}",

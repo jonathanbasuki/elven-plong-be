@@ -10,12 +10,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.exceptions import HTTPException
 
 from plong_elven.api.routers.auth import router as auth_router
-from plong_elven.api.routers.broadcasts import router as broadcasts_router
 from plong_elven.api.routers.cameras import router as cameras_router
 from plong_elven.api.routers.crowd import router as crowd_router
 from plong_elven.api.routers.dev import router as dev_router
 from plong_elven.api.routers.profile import router as profile_router
 from plong_elven.api.routers.staff import router as staff_router
+from plong_elven.api.routers.tasks import router as tasks_router
 from plong_elven.api.routers.zones import router as zones_router
 from plong_elven.common.settings import check_security_settings, get_settings
 from plong_elven.db.session import get_db
@@ -46,7 +46,7 @@ def create_app() -> FastAPI:
     application.include_router(profile_router)
     application.include_router(cameras_router)
     application.include_router(crowd_router)
-    application.include_router(broadcasts_router)
+    application.include_router(tasks_router)
     application.include_router(staff_router)
     application.include_router(zones_router)
     if get_settings().app_env == "dev":

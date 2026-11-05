@@ -1,4 +1,4 @@
-"""Worker routes under /api/v1/cameras/{cameraId} (Task 2.6)."""
+"""Camera routes under /api/v1/cameras/{cameraId} (Task 2.6)."""
 
 import pytest
 from conftest import FakeSessionFactory, fake_user
@@ -20,7 +20,7 @@ class _UserSession:
         self.user = user
 
     async def get(self, model, key, **kw):
-        return self.user if self.user is not None and key == self.user.id else None
+        return self.user if self.user is not None and key == self.user.user_id else None
 
     async def execute(self, stmt):
         user = self.user
@@ -102,7 +102,7 @@ def test_missing_or_wrong_key_is_401(live, path, kwargs, headers) -> None:
 
 
 @pytest.mark.parametrize("path,kwargs", ROUTES)
-def test_blank_internal_key_rejects_every_worker_call(
+def test_blank_internal_key_rejects_every_camera_call(
     live, monkeypatch, path, kwargs
 ) -> None:
     """P2: a blank INTERNAL_API_KEY rejects the call even with an empty header."""
@@ -194,7 +194,7 @@ def test_bad_camera_id_is_422(live, internal_headers, suffix, bad) -> None:
     assert live.raw_frames == {}
 
 
-def test_old_worker_routes_are_gone(live, internal_headers) -> None:
+def test_old_camera_routes_are_gone(live, internal_headers) -> None:
     client = TestClient(app)
     assert (
         client.post(
@@ -216,3 +216,31 @@ def test_old_worker_routes_are_gone(live, internal_headers) -> None:
     )
     assert live.counts == {}
     assert live.frames == {}
+
+
+def test_camera_reads_its_zones_from_the_db(live, internal_headers) -> None:
+    from test_tasks import MemorySession
+
+    from plong_elven.db.session import get_db
+
+    app.dependency_overrides[get_db] = lambda: MemorySession()
+
+    response = TestClient(app).get(
+        "/api/v1/cameras/cam1/zones", headers=internal_headers
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "zones": [
+            {
+                "id": "z1",
+                "name": "Main Lobby",
+                "polygon": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+            }
+        ]
+    }
+
+
+def test_camera_zones_need_the_internal_key(live) -> None:
+    response = TestClient(app).get("/api/v1/cameras/cam1/zones")
+    assert response.status_code == 401

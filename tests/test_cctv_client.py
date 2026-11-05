@@ -1,11 +1,11 @@
-"""cctv worker client posts to /api/v1/cameras/{cameraId}/... (Task 2.6)."""
+"""The camera client talks to /api/v1/cameras/{cameraId}/... (Task 2.6)."""
 
 import json
 
 import httpx
 import pytest
 
-from plong_elven.cctv.client import post_counts, post_frame
+from plong_elven.cctv.client import fetch_zones, post_counts, post_frame
 
 
 def _client(seen: list[httpx.Request], status: int = 200) -> httpx.Client:
@@ -47,3 +47,22 @@ def test_http_error_returns_false() -> None:
     seen: list[httpx.Request] = []
     assert post_counts(_client(seen, 401), "http://api", "k", "cam1", {}) is False
     assert post_frame(_client(seen, 413), "http://api", "k", "cam1", b"j") is False
+
+
+def test_fetch_zones_reads_the_camera_route() -> None:
+    seen: list[httpx.Request] = []
+    zones = [{"id": "z1", "name": "A", "polygon": [[0, 0], [1, 0], [1, 1]]}]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"zones": zones})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    assert fetch_zones(client, "http://api", "k", "cam1") == zones
+    (req,) = seen
+    assert (req.method, req.url.path) == ("GET", "/api/v1/cameras/cam1/zones")
+    assert req.headers["X-Internal-Api-Key"] == "k"
+
+
+def test_fetch_zones_failure_returns_none() -> None:
+    assert fetch_zones(_client([], 503), "http://api", "k", "cam1") is None

@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from plong_elven.api.deps import get_push_sender, get_session_factory
 from plong_elven.api.main import app
-from plong_elven.db.models import Zone, ZoneCountHistory
+from plong_elven.db.models import Zone, ZoneLog
 from plong_elven.db.session import get_db
 from plong_elven.schemas.zones import CrowdOut, HistoryBucketOut
 from plong_elven.services.crowd_service import CrowdService
@@ -73,10 +73,8 @@ def test_background_job_uses_its_own_session(fake_push_sender) -> None:
 ZONE = Zone(
     zone_id="z1",
     name="Main Lobby",
-    map_image_url="u",
     polygon=[],
-    warning_threshold=5,
-    crowded_threshold=10,
+    threshold=10,
 )
 
 
@@ -157,7 +155,7 @@ async def test_record_sample_flushes_old_bucket_to_history() -> None:
     await svc.record_sample("z1", 2, t1)
     assert session.committed == 1
     assert len(session.added) == 1
-    assert isinstance(session.added[0], ZoneCountHistory)
+    assert isinstance(session.added[0], ZoneLog)
     assert session.added[0].avg_count == 6.0
     assert session.added[0].peak_count == 8
 
@@ -165,7 +163,7 @@ async def test_record_sample_flushes_old_bucket_to_history() -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("count", "status"),
-    [(0, "safe"), (4, "safe"), (5, "warning"), (7, "warning"), (10, "crowded")],
+    [(0, "safe"), (9, "safe"), (10, "crowded"), (50, "crowded")],
 )
 async def test_crowd_classifies_live_count(count: int, status: str) -> None:
     live = LiveState()
@@ -194,13 +192,13 @@ async def test_history_returns_recent_buckets() -> None:
     class _HistorySession:
         async def scalars(self, stmt):
             rows = [
-                ZoneCountHistory(
+                ZoneLog(
                     zone_id="z1",
                     bucket_start=datetime(2026, 11, 3, 12, 5, tzinfo=UTC),
                     avg_count=5.5,
                     peak_count=8,
                 ),
-                ZoneCountHistory(
+                ZoneLog(
                     zone_id="z1",
                     bucket_start=datetime(2026, 11, 3, 12, 0, tzinfo=UTC),
                     avg_count=3.0,
