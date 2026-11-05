@@ -203,7 +203,9 @@ class BroadcastService:
 
         if await self._close_if_expired(broadcast, datetime.now(UTC)):
             await self._session.commit()
-            raise AppError(409, "expired", "This broadcast has expired.")
+        # Covers both "just expired" and already closed/finished broadcasts.
+        if broadcast.status != "open":
+            raise AppError(409, "expired", "This broadcast is no longer open.")
 
         existing = await self._session.get(
             BroadcastResponse, {"broadcast_id": broadcast_id, "staff_id": user.id}

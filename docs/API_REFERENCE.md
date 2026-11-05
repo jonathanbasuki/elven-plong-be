@@ -26,7 +26,7 @@ cross-checked against the live route table (`walk_routes` in
 | 403 | `not_your_response` | complete a broadcast you did not accept |
 | 404 | `not_found` | unknown zone, broadcast, staff, or no frame yet |
 | 409 | `broadcast_open` | zone already has an open broadcast |
-| 409 | `expired` | accept after `expiresAt` |
+| 409 | `expired` | accept after `expiresAt`, or a broadcast already `closed`/`finished` |
 | 409 | `already_delegating` | staff is already on another broadcast |
 | 409 | `slots_full` | `staffNeeded` already accepted |
 | 409 | `not_all_done` | finish before every accepted staff completed |

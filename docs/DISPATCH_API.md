@@ -222,8 +222,9 @@ returns the broadcast object. Checks run in this order:
 
 1. `404 not_found` for an unknown id (`broadcastId` must be a UUID, otherwise
    `422`).
-2. `409 expired` if the broadcast is still `open` and past `expiresAt` (it is
-   closed in the same call).
+2. `409 expired` if the broadcast is not `open` (already `closed` or
+   `finished`), or is still `open` but past `expiresAt` (it is closed in the
+   same call).
 3. A repeat call from a user who already accepted returns `200` with no
    duplicate row.
 4. `409 already_delegating` if the user's status is `delegating` (on another
@@ -232,10 +233,6 @@ returns the broadcast object. Checks run in this order:
 
 The broadcast row is locked (`SELECT ... FOR UPDATE`) so two staff cannot both
 take the last slot.
-
-Note: the `expired` check only looks at broadcasts whose status is still
-`open`. A broadcast that was already set to `closed` by an earlier read is not
-rejected with `expired` by this code path.
 
 ### `POST /api/v1/broadcasts/{broadcastId}/complete` (`floor_staff`)
 

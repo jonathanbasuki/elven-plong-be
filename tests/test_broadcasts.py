@@ -432,6 +432,21 @@ def test_accept_expired_is_409_expired_and_closes(session, client_as) -> None:
     assert session.commits == 1
 
 
+@pytest.mark.parametrize("status", ["closed", "finished"])
+def test_accept_not_open_is_409_expired(session, client_as, status) -> None:
+    """A broadcast already closed (e.g. by a list sweep) or finished takes no one,
+    even with free slots and a future expiresAt."""
+    client, user = client_as("floor_staff")
+    b = session.add_broadcast(status=status, staff_needed=2)
+
+    response = client.post(f"/api/v1/broadcasts/{b.broadcast_id}/accept")
+
+    _err(response, 409, "expired")
+    assert session.responses == []
+    assert user.status == "idle"
+    assert b.status == status
+
+
 def test_accept_when_slots_full_is_409(session, client_as) -> None:
     client, _ = client_as("floor_staff")
     b = session.add_broadcast(staff_needed=1)
