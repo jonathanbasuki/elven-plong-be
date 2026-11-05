@@ -121,6 +121,8 @@ _PAGE = """<!doctype html>
   <section id="tab-edit" class="tab">
     <div class="row">
       <button id="capture">Capture frame</button>
+      <label>zone id <input id="new-id" placeholder="next free" style="width:90px"></label>
+      <label>name <input id="new-name" placeholder="Zone N" style="width:110px"></label>
       <label>threshold <input id="new-threshold" type="number" min="1" value="10" style="width:70px"></label>
       <button id="finish-zone">Finish zone (&gt;=3 points)</button>
       <button id="undo">Undo</button>
@@ -264,8 +266,11 @@ async function startLive() {
     const msg = JSON.parse(ev.data);
     if (msg.cameraId !== CAMERA_ID) return;
     const el = document.getElementById("counts");
-    el.innerHTML = Object.entries(msg.counts)
-      .map(([id, n]) => `<span>${zoneNames[id] || id}: ${n}</span>`).join("");
+    el.replaceChildren(...Object.entries(msg.counts).map(([id, n]) => {
+      const span = document.createElement("span");
+      span.textContent = `${zoneNames[id] || id}: ${n}`;
+      return span;
+    }));
   };
   ws.onclose = () => { liveStatus.textContent = "live counts disconnected"; ws = null; };
 }
@@ -284,7 +289,7 @@ function syncZoneNames() { zoneNames = {}; zones.forEach(z => zoneNames[z.id] = 
 function renderDevZones() {
   const sel = document.getElementById("dev-zone");
   const prev = sel.value;
-  sel.innerHTML = zones.map(z => `<option value="${z.id}">${z.id} (${z.name})</option>`).join("");
+  sel.replaceChildren(...zones.map(z => new Option(`${z.id} (${z.name})`, z.id)));
   if (zones.some(z => z.id === prev)) sel.value = prev;
 }
 
@@ -324,11 +329,26 @@ function renderZoneList() {
   ul.innerHTML = "";
   zones.forEach((z, i) => {
     const li = document.createElement("li");
-    li.innerHTML = `<span style="color:${colors[i % colors.length]}">&#9632;</span> ${z.id} ${z.name} (${z.polygon.length} pts) threshold `;
+    const swatch = document.createElement("span");
+    swatch.style.color = colors[i % colors.length];
+    swatch.textContent = "\u25a0";
+    li.appendChild(swatch);
+    // textContent, not innerHTML: names are typed by hand.
+    li.appendChild(document.createTextNode(` ${z.id} ${z.name} (${z.polygon.length} pts) threshold `));
     const th = document.createElement("input");
     th.type = "number"; th.min = "1"; th.value = z.threshold; th.style.width = "70px";
     th.onchange = () => { z.threshold = parseInt(th.value, 10) || 1; };
     li.appendChild(th);
+    const again = document.createElement("button");
+    again.textContent = "Redraw";
+    again.onclick = () => {
+      document.getElementById("new-id").value = z.id;
+      document.getElementById("new-name").value = z.name;
+      document.getElementById("new-threshold").value = z.threshold;
+      current = []; redraw();
+      status.textContent = `click the new shape for ${z.id}, then Finish zone`;
+    };
+    li.appendChild(again);
     const del = document.createElement("button");
     del.textContent = "Delete";
     del.onclick = () => { zones.splice(i, 1); syncZoneNames(); renderZoneList(); redraw(); };
@@ -355,13 +375,33 @@ overlay.addEventListener("click", (ev) => {
   redraw();
 });
 
+// Draw a zone under the id typed in "zone id" (e.g. z2 with no z1), or the next
+// free zN when it is blank. An id that already exists is redrawn in place.
 document.getElementById("finish-zone").onclick = () => {
   if (current.length < 3) { status.textContent = "need at least 3 points"; return; }
-  let n = 1;
-  while (zones.some(z => z.id === `z${n}`)) n++;  // next unused id
+  const idInput = document.getElementById("new-id");
+  const nameInput = document.getElementById("new-name");
+  let id = idInput.value.trim();
+  if (!id) {
+    let n = 1;
+    while (zones.some(z => z.id === `z${n}`)) n++;
+    id = `z${n}`;
+  }
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(id)) {
+    status.textContent = "zone id: letters, digits, - and _ only (max 64)";
+    return;
+  }
+  const num = /^z(\\d+)$/.exec(id);
+  const name = nameInput.value.trim() || (num ? `Zone ${num[1]}` : id);
   const threshold = parseInt(document.getElementById("new-threshold").value, 10) || 10;
-  zones.push({id: `z${n}`, name: `Zone ${n}`, polygon: current, threshold});
+  const existing = zones.find(z => z.id === id);
+  if (existing) Object.assign(existing, {name, polygon: current, threshold});
+  else zones.push({id, name, polygon: current, threshold});
+  zones.sort((a, b) => a.id.localeCompare(b.id, undefined, {numeric: true}));
   current = [];
+  idInput.value = ""; nameInput.value = "";
+  document.getElementById("new-threshold").value = "10";
+  status.textContent = `${existing ? "redrew" : "added"} ${id} (not saved yet)`;
   syncZoneNames(); renderZoneList(); redraw();
 };
 

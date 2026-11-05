@@ -87,3 +87,15 @@ async def test_save_layout_rejects_duplicate_ids() -> None:
     with pytest.raises(AppError) as exc:
         await ZoneService(MemorySession()).save_layout([z, z])
     assert exc.value.status_code == 422
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "bad", [[], [[0, 0], [1, 0]], [[0, 0, 0], [1, 0, 0], [1, 1, 0]], "x"]
+)
+async def test_camera_zones_skip_malformed_polygons(bad) -> None:
+    """A hand-edited bad row must not reach the camera (it would crash it)."""
+    s = _session_with_two_zones()
+    s.zones["z2"].polygon = bad
+
+    assert [z.id for z in await ZoneService(s).camera_zones()] == ["z1"]

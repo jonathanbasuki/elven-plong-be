@@ -202,3 +202,42 @@ async def test_layout_delete_cascades_logs_and_refuses_zones_with_tasks(
                 await s.execute(delete(ZoneLog).where(ZoneLog.zone_id == zone_id))
                 await s.commit()
             await _cleanup(factory, zone_id)
+
+
+@pytest.mark.asyncio
+async def test_task_push_skips_staff_whose_home_zone_is_the_task_zone(factory) -> None:
+    """SQL NULL != 'z' is not true: staff with no home zone must still be pushed."""
+    here, there, tag = (f"push-{uuid4().hex[:8]}" for _ in range(3))
+    async with factory() as s:
+        s.add_all([_zone(here), _zone(there)])
+        await s.flush()
+        users = [
+            User(
+                role_id=1,  # floor_staff
+                email=f"{tag}-{name}@push.test",
+                password_hash="x",
+                full_name=name,
+                is_active=True,
+                push_token=f"{tag}-{name}",
+                zone_id=home,
+            )
+            for name, home in [("here", here), ("there", there), ("none", None)]
+        ]
+        s.add_all(users)
+        await s.commit()
+        user_ids = [u.user_id for u in users]
+
+    sender = FakePushSender()
+    try:
+        await NotificationService(factory, sender).notify_role(
+            "floor_staff", "New task", "x", exclude_zone_id=here
+        )
+        ((tokens, _, _),) = sender.calls
+        mine = sorted(t for t in tokens if t.startswith(tag))  # ignore other DB users
+        assert mine == [f"{tag}-none", f"{tag}-there"]
+    finally:
+        async with factory() as s:
+            await s.execute(delete(User).where(User.user_id.in_(user_ids)))
+            await s.commit()
+        await _cleanup(factory, here)
+        await _cleanup(factory, there)

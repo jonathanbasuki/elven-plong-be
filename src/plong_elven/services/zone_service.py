@@ -5,6 +5,7 @@ import FastAPI. Live count and status are not here; see CrowdService.
 """
 
 import builtins
+import logging
 from datetime import UTC, datetime
 
 from sqlalchemy import func, select
@@ -15,6 +16,23 @@ from plong_elven.schemas.layout import CameraZoneOut, LayoutZone
 from plong_elven.schemas.zones import ZoneOut
 from plong_elven.services.errors import AppError
 from plong_elven.services.task_service import close_expired_tasks
+
+logger = logging.getLogger(__name__)
+
+
+def _usable_polygon(polygon: object) -> bool:
+    """At least 3 points of exactly two numbers: what the camera's pixel math
+    needs. Rows edited by hand in the DB may not be."""
+    return (
+        isinstance(polygon, list)
+        and len(polygon) >= 3
+        and all(
+            isinstance(p, list)
+            and len(p) == 2
+            and all(isinstance(v, int | float) and not isinstance(v, bool) for v in p)
+            for p in polygon
+        )
+    )
 
 
 class ZoneService:
@@ -45,11 +63,22 @@ class ZoneService:
         return _zone_out(zone)
 
     async def camera_zones(self) -> builtins.list[CameraZoneOut]:
-        """Zones with their camera-frame polygons, for the camera process."""
-        return [
-            CameraZoneOut(id=z.zone_id, name=z.name, polygon=z.polygon)
-            for z in await self._all()
-        ]
+        """Zones with their camera-frame polygons, for the camera process.
+
+        A zone with a malformed polygon is left out (and logged): it would crash
+        the camera's pixel math, stopping counts for every zone.
+        """
+        zones = []
+        for z in await self._all():
+            if _usable_polygon(z.polygon):
+                zones.append(
+                    CameraZoneOut(id=z.zone_id, name=z.name, polygon=z.polygon)
+                )
+            else:
+                logger.warning(
+                    "zone %s has a malformed polygon; not sent to cameras", z.zone_id
+                )
+        return zones
 
     async def get_layout(self) -> builtins.list[LayoutZone]:
         """Zones as the dev editor shows them."""

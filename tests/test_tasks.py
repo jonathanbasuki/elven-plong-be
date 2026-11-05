@@ -652,6 +652,26 @@ def test_finish_after_everyone_completed_frees_the_zone(session, client_as) -> N
     assert session.zones["z1"].is_active_task is False
 
 
+def test_finishing_an_older_task_keeps_the_newer_task_active(
+    session, client_as
+) -> None:
+    """A leftover task (e.g. from before the migration) finishing late must not
+    free the zone while its newest task is still running."""
+    client, _ = client_as("ops_manager")
+    now = datetime.now(UTC)
+    old = session.add_task(
+        status=TaskStatusId.CLOSED, created_at=now - timedelta(hours=1)
+    )
+    session.add_respondent(old, session.add_user(fake_user("floor_staff")), True)
+    newer = session.add_task(status=TaskStatusId.CLOSED, created_at=now)
+    session.add_respondent(newer, session.add_user(fake_user("floor_staff")))
+
+    assert client.post(f"/api/v1/tasks/{old.task_id}/finish").status_code == 200
+
+    assert session.zones["z1"].is_active_task is True
+    _err(client.post("/api/v1/tasks/broadcast", json=BODY), 409, "broadcast_open")
+
+
 @pytest.mark.parametrize("accepted", [True, False])
 def test_finish_before_all_done_is_409(session, client_as, accepted) -> None:
     client, _ = client_as("ops_manager")

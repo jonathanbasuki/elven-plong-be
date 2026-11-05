@@ -13,7 +13,7 @@ Task rules:
 import builtins
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from sqlalchemy import func, select
@@ -29,15 +29,19 @@ from plong_elven.db.models import (
     UserStatusId,
     Zone,
 )
-from plong_elven.schemas.tasks import AcceptedStaffOut, FinishOut, StaffOut, TaskOut
+from plong_elven.schemas.tasks import (
+    AcceptedStaffOut,
+    FinishOut,
+    StaffOut,
+    TaskOut,
+    TaskStatus,
+)
 from plong_elven.services.errors import AppError
 
 if TYPE_CHECKING:
     from plong_elven.services.internal.notification_service import NotificationService
 
 TASK_OPEN_SECONDS = 20
-
-TaskStatusName = Literal["open", "closed", "finished"]
 
 
 async def _respondent_count(
@@ -55,13 +59,28 @@ async def _respondent_count(
     return await session.scalar(stmt) or 0
 
 
+async def _free_zone_if_latest(session: AsyncSession, task: Task) -> None:
+    """Clear the zone's is_active_task, but only if `task` is the zone's newest
+    task. An older leftover task (e.g. from before the migration) ending must
+    not free a zone whose current task is still running."""
+    latest = await session.scalar(
+        select(Task)
+        .where(Task.zone_id == task.zone_id)
+        .order_by(Task.created_at.desc())
+        .limit(1)
+    )
+    if latest is not None and latest.task_id != task.task_id:
+        return
+    zone = await session.get(Zone, task.zone_id)
+    if zone is not None:
+        zone.is_active_task = False
+
+
 async def _close(session: AsyncSession, task: Task) -> None:
     """Close an open task. With no respondents the zone is free again."""
     task.task_status_id = TaskStatusId.CLOSED
     if await _respondent_count(session, task.task_id) == 0:
-        zone = await session.get(Zone, task.zone_id)
-        if zone is not None:
-            zone.is_active_task = False
+        await _free_zone_if_latest(session, task)
 
 
 async def close_expired_tasks(
@@ -137,7 +156,7 @@ class TaskService:
         )
 
     async def list(
-        self, zone_id: str | None, status: TaskStatusName | None, limit: int
+        self, zone_id: str | None, status: TaskStatus | None, limit: int
     ) -> builtins.list[TaskOut]:
         """List tasks newest first. Empty result is [], never 404.
 
@@ -293,9 +312,7 @@ class TaskService:
         if task.task_status_id != TaskStatusId.FINISHED:
             task.task_status_id = TaskStatusId.FINISHED
             task.finished_at = datetime.now(UTC)
-            zone = await self._session.get(Zone, task.zone_id)
-            if zone is not None:
-                zone.is_active_task = False
+            await _free_zone_if_latest(self._session, task)
             await self._session.commit()
         return FinishOut(
             taskId=task.task_id, status="finished", finishedAt=task.finished_at

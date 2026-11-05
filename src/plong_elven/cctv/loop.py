@@ -94,7 +94,9 @@ def run(args: argparse.Namespace) -> None:
 
             now = time.monotonic()
             if poller.version != zones_version:  # zones edited in the database
-                zones, zones_version = poller.zones, poller.version
+                # Version first: if the poller swaps the list between these two
+                # reads, the next frame sees a newer version and reloads again.
+                zones_version, zones = poller.version, poller.zones
                 size = None  # re-derive polygons against the new zones
 
             h, w = frame.shape[:2]
