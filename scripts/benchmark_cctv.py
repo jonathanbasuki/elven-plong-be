@@ -20,7 +20,7 @@ def parse_profile(value: str) -> tuple[str, float, int]:
         ) from error
 
 
-def find_worker_process(launcher: psutil.Process) -> psutil.Process:
+def find_camera_process(launcher: psutil.Process) -> psutil.Process:
     deadline = time.monotonic() + 15
     while time.monotonic() < deadline:
         candidates = [launcher, *launcher.children(recursive=True)]
@@ -44,13 +44,12 @@ def find_worker_process(launcher: psutil.Process) -> psutil.Process:
         time.sleep(0.2)
     raise RuntimeError(
         "could not find the plong_elven.cctv process; "
-        "check the worker log and process command line"
+        "check the camera log and process command line"
     )
 
 
 def run_profile(
     source: str,
-    zones: str,
     camera_id: str,
     model: str | None,
     device: str | None,
@@ -59,7 +58,7 @@ def run_profile(
     output_dir: Path,
 ) -> None:
     name, frame_interval, jpeg_quality = profile
-    log_path = output_dir / f"{name}.worker.log"
+    log_path = output_dir / f"{name}.camera.log"
     samples_path = output_dir / f"{name}.csv"
     command = [
         "uv",
@@ -72,8 +71,6 @@ def run_profile(
         source,
         "--camera-id",
         camera_id,
-        "--zones",
-        zones,
         "--frame-interval",
         str(frame_interval),
         "--jpeg-quality",
@@ -84,7 +81,7 @@ def run_profile(
     if device:
         command.extend(("--device", device))
 
-    print(f"[{name}] starting worker for {duration:.0f}s")
+    print(f"[{name}] starting camera for {duration:.0f}s")
     with log_path.open("w") as log_file:
         process = subprocess.Popen(
             command,
@@ -94,9 +91,9 @@ def run_profile(
         )
         launcher = psutil.Process(process.pid)
         time.sleep(1)
-        worker = find_worker_process(launcher)
-        print(f"[{name}] measuring PID {worker.pid}: {' '.join(worker.cmdline())}")
-        worker.cpu_percent(None)
+        camera = find_camera_process(launcher)
+        print(f"[{name}] measuring PID {camera.pid}: {' '.join(camera.cmdline())}")
+        camera.cpu_percent(None)
         started_at = time.monotonic()
         rows: list[dict[str, float | str]] = []
 
@@ -105,20 +102,20 @@ def run_profile(
                 time.sleep(1)
                 if process.poll() is not None:
                     raise RuntimeError(
-                        f"worker exited early with code {process.returncode}; "
+                        f"camera exited early with code {process.returncode}; "
                         f"see {log_path}"
                     )
-                if not worker.is_running():
+                if not camera.is_running():
                     raise RuntimeError(
-                        f"worker exited early with code {process.returncode}; "
+                        f"camera exited early with code {process.returncode}; "
                         f"see {log_path}"
                     )
-                with worker.oneshot():
+                with camera.oneshot():
                     rows.append(
                         {
                             "elapsed_seconds": round(time.monotonic() - started_at, 1),
-                            "cpu_percent": round(worker.cpu_percent(None), 2),
-                            "rss_mb": round(worker.memory_info().rss / 1024**2, 2),
+                            "cpu_percent": round(camera.cpu_percent(None), 2),
+                            "rss_mb": round(camera.memory_info().rss / 1024**2, 2),
                         }
                     )
         finally:
@@ -160,9 +157,8 @@ def run_profile(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Benchmark CCTV worker profiles")
+    parser = argparse.ArgumentParser(description="Benchmark camera process profiles")
     parser.add_argument("source", help="camera index, video path, or RTSP URL")
-    parser.add_argument("--zones", default="zones.example.json")
     parser.add_argument("--camera-id", default="default")
     parser.add_argument("--model")
     parser.add_argument("--device")
@@ -191,7 +187,6 @@ def main() -> None:
         for profile in profiles:
             run_profile(
                 args.source,
-                args.zones,
                 args.camera_id,
                 args.model,
                 args.device,

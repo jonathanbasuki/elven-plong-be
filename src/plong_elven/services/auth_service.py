@@ -53,7 +53,7 @@ def create_access_token(user: User) -> str:
     expires_in = timedelta(minutes=get_settings().access_token_minutes)
     return jwt.encode(
         {
-            "sub": str(user.id),
+            "sub": str(user.user_id),
             "type": "access",
             "iat": now,
             "exp": now + expires_in,
@@ -66,7 +66,7 @@ def create_access_token(user: User) -> str:
 def user_response(user: User) -> UserResponse:
     """Convert a User model to a UserResponse schema."""
     return UserResponse(
-        id=user.id,
+        id=user.user_id,
         email=user.email,
         fullName=user.full_name,
         role=user.role.name,
@@ -101,7 +101,7 @@ class AuthService:
         """Create a refresh token record in the database."""
         self._session.add(
             RefreshToken(
-                user_id=user.id,
+                user_id=user.user_id,
                 token_hash=token_hash,
                 expires_at=datetime.now(UTC)
                 + timedelta(days=get_settings().refresh_token_days),
@@ -123,7 +123,6 @@ class AuthService:
             raise AppError(401, "unauthenticated", "Invalid email or password")
 
         raw_refresh_token, refresh_hash = new_refresh_token()
-        user.last_login_at = datetime.now(UTC)
         await self._create_refresh_record(user, refresh_hash)
         await self._session.commit()
 
@@ -200,7 +199,7 @@ class AuthService:
             raise AppError(401, "unauthenticated", "Invalid access token") from None
 
         result = await self._session.execute(
-            select(User).options(selectinload(User.role)).where(User.id == user_id)
+            select(User).options(selectinload(User.role)).where(User.user_id == user_id)
         )
         user = result.scalar_one_or_none()
         if user is None or not user.is_active:
@@ -225,7 +224,7 @@ class AuthService:
         now = datetime.now(UTC)
         token = jwt.encode(
             {
-                "sub": str(user.id),
+                "sub": str(user.user_id),
                 "type": "ticket",
                 "scope": scope,
                 "iat": now,

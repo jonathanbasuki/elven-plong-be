@@ -8,4 +8,4 @@ try:
 
     print("MPS available:", torch.backends.mps.is_available())
 except ImportError:
-    print("Worker isn't sync")
+    print("Camera dependencies aren't synced (run: make sync-cctv)")

@@ -1,6 +1,6 @@
 """Crowd: GET /api/v1/zones/{zoneId}/crowd[/history], WS /api/v1/crowd/live, ingest.
 
-Counts reach this module from the worker route (api/routers/cameras.py). They
+Counts reach this module from the camera route (api/routers/cameras.py). They
 update in-memory live state, fan out to every connected WebSocket, and schedule
 history and alert work in a background task with its own session.
 """

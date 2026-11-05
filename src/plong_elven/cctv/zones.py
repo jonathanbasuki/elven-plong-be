@@ -1,19 +1,20 @@
 """Zone pixel math: normalized-polygon -> pixel conversion, box-to-zone assignment.
 
-Ported from plong-model/counter.py. Schema I/O (load/save/validate) lives in
-plong_elven.common.zones, which has no cv2/numpy dependency; re-exported below so
-existing call sites (z.load_config, z.ANCHORS, ...) are unaffected.
+Ported from plong-model/counter.py. Zones come from the API
+(GET /api/v1/cameras/{cameraId}/zones) as [{id, name, polygon}] with polygon
+points normalized 0..1 in the camera frame.
 """
 
 import cv2
 import numpy as np
 
-from plong_elven.common.zones import ANCHORS, load_config, save_config  # noqa: F401
+# Which point of a person's box decides their zone.
+ANCHORS = ("bottom_center", "center", "top_center")
 
 
-def to_pixels(cfg: dict, w: int, h: int) -> list[np.ndarray]:
+def to_pixels(zones: list[dict], w: int, h: int) -> list[np.ndarray]:
     """Normalized (top-left origin) polygons -> float32 pixel polygons for this frame size."""
-    return [(np.array(z["polygon"]) * (w, h)).astype(np.float32) for z in cfg["zones"]]
+    return [(np.array(z["polygon"]) * (w, h)).astype(np.float32) for z in zones]
 
 
 def anchor_points(boxes: np.ndarray, anchor: str) -> np.ndarray:

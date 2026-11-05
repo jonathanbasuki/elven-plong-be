@@ -20,7 +20,7 @@ from uuid import uuid4
 import pytest
 
 from plong_elven.common.settings import get_settings
-from plong_elven.db.models import Role, User, Zone
+from plong_elven.db.models import Role, User, UserStatusId, Zone
 
 
 class FakeSessionFactory:
@@ -69,17 +69,16 @@ class _EmptyScalars:
 
 
 class FakeSession:
-    """Fake async session for dispatch/broadcast tests."""
+    """Fake async session for task tests."""
 
     async def get(self, model, key):
         if model is Zone and key == "z1":
             return Zone(
                 zone_id="z1",
                 name="Main Lobby",
-                map_image_url="https://example.com/main-lobby.png",
-                polygon=[[0.0, 0.0], [1.0, 1.0]],
-                warning_threshold=5,
-                crowded_threshold=10,
+                polygon=[[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+                threshold=10,
+                is_active_task=False,
             )
         return None
 
@@ -141,14 +140,15 @@ async def fake_db() -> AsyncIterator[FakeSession]:
 def fake_user(role_name: str = "floor_staff") -> User:
     role_ids = {"floor_staff": 1, "ops_manager": 2, "admin": 3}
     return User(
-        id=uuid4(),
+        user_id=uuid4(),
         role_id=role_ids.get(role_name, 1),
-        role=Role(id=role_ids.get(role_name, 1), name=role_name),
+        role=Role(role_id=role_ids.get(role_name, 1), name=role_name),
         email="test@plong.test",
         password_hash="x",
         full_name="Test User",
         is_active=True,
-        status="idle",
+        user_status_id=UserStatusId.IDLE,
+        zone_id=None,
     )
 
 

@@ -13,7 +13,7 @@ users
 refresh_tokens
 ```
 
-Each user has exactly one role. The CCTV worker authenticates with the separate
+Each user has exactly one role. The camera process authenticates with the separate
 `X-Internal-Api-Key` header; it does not use the user tables.
 
 Migration chain (oldest first):
@@ -24,40 +24,48 @@ ad950fffbf32  create auth tables (roles, users, refresh_tokens; seeds roles 1, 2
 f9fe68ec2955  merge staff into users (adds users.status, users.push_token; drops staff)
 f67711b4a0bb  add zone_count_history
 a1b2c3d4e5f6  add admin role (seeds role 3)
+3f1a9c2e7b40  rename to task schema (users.id -> user_id, roles.id -> role_id, ...)
+5c8d2e1f9a63  status lookup tables (users.status -> user_status_id)
+8e4b7a0d2c15  users.zone_id, users.last_location; drop email_verified_at, updated_at, last_login_at
 ```
 
 ## Relationships
 
 ```text
 roles 1 ──── * users 1 ──── * refresh_tokens
+user_status 1 ──── * users * ──── 0..1 zone   (home zone, and last_location)
 ```
 
 ## PostgreSQL schema
 
-The following SQL matches what the migrations produce for the auth tables.
+The following SQL matches what the migrations produce for the auth tables
+(at head, `8e4b7a0d2c15`).
 
 ```sql
 CREATE TABLE roles (
-    id SMALLINT PRIMARY KEY,
+    role_id SMALLINT PRIMARY KEY,
+    name VARCHAR(32) NOT NULL UNIQUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE user_status (
+    user_status_id SMALLINT PRIMARY KEY,  -- 1 idle, 2 delegating
     name VARCHAR(32) NOT NULL UNIQUE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE users (
-    id UUID PRIMARY KEY,
-    role_id SMALLINT NOT NULL REFERENCES roles(id) ON DELETE RESTRICT,
+    user_id UUID PRIMARY KEY,
+    role_id SMALLINT NOT NULL REFERENCES roles(role_id) ON DELETE RESTRICT,
     email VARCHAR(255) NOT NULL,
     password_hash VARCHAR(255) NOT NULL,
     full_name VARCHAR(120) NOT NULL,
     is_active BOOLEAN NOT NULL,           -- no DB default; the ORM sets TRUE
-    email_verified_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    last_login_at TIMESTAMPTZ,
-    -- added by f9fe68ec2955:
-    status TEXT NOT NULL DEFAULT 'idle',
     push_token TEXT,
-    CONSTRAINT users_status_check CHECK (status IN ('idle', 'delegating'))
+    user_status_id SMALLINT NOT NULL DEFAULT 1 REFERENCES user_status(user_status_id),
+    zone_id TEXT REFERENCES zone(zone_id) ON DELETE SET NULL,        -- home zone
+    last_location TEXT REFERENCES zone(zone_id) ON DELETE SET NULL   -- not used yet
 );
 
 CREATE UNIQUE INDEX uq_users_email_lower
@@ -68,7 +76,7 @@ CREATE INDEX ix_users_role_id
 
 CREATE TABLE refresh_tokens (
     id UUID PRIMARY KEY,
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
     token_hash CHAR(64) NOT NULL UNIQUE,
     expires_at TIMESTAMPTZ NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -85,14 +93,14 @@ CREATE INDEX ix_refresh_tokens_active
     WHERE revoked_at IS NULL;
 ```
 
-`id` values for `users` and `refresh_tokens` are generated in Python
+`users.user_id` and `refresh_tokens.id` are generated in Python
 (`uuid4`), not by the database.
 
 ## Seed data
 
 The migrations insert three roles with plain inserts (no `ON CONFLICT`):
 
-| id | name | migration |
+| role_id | name | migration |
 |---|---|---|
 | 1 | `floor_staff` | `ad950fffbf32` |
 | 2 | `ops_manager` | `ad950fffbf32` |
@@ -122,10 +130,7 @@ the prompted password with Argon2id), or for local testing with
 - `role_id` is required, so every user has exactly one role.
 - `is_active = false` blocks login, refresh and access-token use without
   deleting the row.
-- `last_login_at` is set on each successful login.
-- `updated_at` is set on insert only; no code updates it later.
-- `email_verified_at` is not read or written by any code yet.
-- `status` and `push_token` are described under
+- `user_status_id`, `push_token`, `zone_id` and `last_location` are described under
   [Dispatch fields](#dispatch-fields-on-users).
 
 ### `refresh_tokens`
@@ -190,8 +195,14 @@ ALTER TABLE users ADD CONSTRAINT users_status_check
     CHECK (status IN ('idle', 'delegating'));
 ```
 
-A `floor_staff` user is the staff member for dispatch; there is no separate
-staff id. `broadcast_responses.staff_id` references `users.id`.
+Later migrations replaced `status` with `user_status_id` (a foreign key to
+the `user_status` lookup table: 1 `idle`, 2 `delegating`) and added
+`zone_id` (home zone, nullable, cleared if the zone is deleted) and
+`last_location` (the zone a beacon last saw the user in; not used yet, always
+null).
+
+A `floor_staff` user is the staff member for tasks; there is no separate
+staff id. `task_respondents.staff_id` references `users.user_id`.
 
 `push_token` is written by `PUT /api/v1/profile/push-token` (one token per
 user; a new call replaces it), cleared by `POST /api/v1/auth/logout`, and read

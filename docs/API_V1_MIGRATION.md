@@ -1,5 +1,14 @@
 # API v1 migration guide (for the iOS app)
 
+> **Superseded in part.** This guide describes the move from the old routes to
+> `/api/v1`. Since then, broadcasts became **tasks** (`/api/v1/broadcasts` →
+> `/api/v1/tasks`, create is `POST /api/v1/tasks/broadcast`, `broadcastId` →
+> `taskId`, `staffNeeded` → `totalStaff`, new required `instruction`), zones
+> have one `threshold` (status is `safe`/`crowded`, no `warning`), and the zone
+> object is `zoneId`, `name`, `threshold`, `isActiveTask`. For the current
+> contract read [FRONTEND_GUIDE.md](FRONTEND_GUIDE.md) and
+> [API_REFERENCE.md](API_REFERENCE.md).
+
 This guide lists every change the iOS app must make for the new API contract.
 It is written from the backend code and tests in this repository
 (`src/plong_elven/api/routers/`, `src/plong_elven/schemas/`, `tests/`), not

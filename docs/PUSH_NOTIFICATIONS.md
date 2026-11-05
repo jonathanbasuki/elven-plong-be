@@ -12,35 +12,32 @@ pushes are just skipped (logged as a warning), nothing breaks.
 
 | Trigger | Recipients | Code |
 |---|---|---|
-| An `ops_manager` creates a broadcast (`POST /api/v1/broadcasts`) | every `floor_staff` user with a non-null `push_token` | `BroadcastService.create` in `services/broadcast_service.py` |
-| A zone's status newly crosses into `warning` or `crowded` | every `ops_manager` user with a non-null `push_token` | `AlertService.on_count` in `services/internal/alert_service.py` |
+| An `ops_manager` broadcasts a task (`POST /api/v1/tasks/broadcast`) | every `floor_staff` user with a non-null `push_token` whose home zone (`users.zone_id`) is not the task's zone; users with no home zone are included | `TaskService.broadcast` in `services/task_service.py` |
+| A zone newly becomes `crowded` (count reaches its `threshold`) | every `ops_manager` user with a non-null `push_token` | `AlertService.on_count` in `services/internal/alert_service.py` |
 
 `admin` users never receive pushes. Recipients are selected by role in
 `NotificationService.notify_role` (`services/internal/notification_service.py`). Both
 pushes run as FastAPI background tasks after the response, so a push failure
 never changes the API response.
 
-Broadcast push copy: title `New broadcast`, body
-`Crowd control needed in {zone} — tap to accept`.
+Task push copy: title `New task`, body `{zone}: {instruction}` (the
+manager's instruction, at most 50 characters).
 
-The status-change push only fires on the transition into `warning`/`crowded`,
+The crowded push only fires on the transition into `crowded`,
 not on every count post while the zone stays busy, and not on the way back
-down to `safe`. Counts come from the worker route
+down to `safe`. Counts come from the camera route
 `POST /api/v1/cameras/{cameraId}/detections` or, in dev, the manual
 `POST /dev/cameras/{cameraId}/detections`; both use the same ingest path. Only
-zones that exist in the `zones` table are checked. Each status has a 5-minute
-cooldown per zone; a change to a different status (for example `warning` to
-`crowded`) is not throttled. State is kept in memory
+zones that exist in the `zone` table are checked. It has a 5-minute cooldown
+per zone, so a count hovering around the threshold does not re-fire it. State is kept in memory
 (`LiveState.last_status` and `last_alert_sent_at` in `state/live_state.py`), so
 it resets on API restart.
 
-Alert copy (`default_alert_rules` in `services/internal/alert_service.py`) — crowded is
-intentionally more urgent than warning:
+Alert copy (`default_alert_rules` in `services/internal/alert_service.py`):
 
 | Status | Title | Body |
 |---|---|---|
-| `warning` | Crowd warning | `{zone} is getting busy ({count} people detected).` |
-| `crowded` | Zone crowded — act now | `{zone} is crowded ({count} people). Dispatch staff immediately.` |
+| `crowded` | Zone crowded — act now | `{zone} is crowded ({count} people). Broadcast a task now.` |
 
 ## 1. Generate an APNs Auth Key
 
@@ -110,9 +107,9 @@ docker compose --env-file .env -f infra/docker-compose.yml exec -T db \
   -c "SELECT email, (push_token IS NOT NULL) AS has_push_token FROM users;"
 ```
 
-Trigger a real push: create a broadcast (`POST /api/v1/broadcasts` with an
-`ops_manager` token, see [DISPATCH_API.md](DISPATCH_API.md)) with at least one
-`floor_staff` device registered, or drive a zone's count into `warning`/
+Trigger a real push: broadcast a task (`POST /api/v1/tasks/broadcast` with an
+`ops_manager` token, see [TASK_API.md](TASK_API.md)) with at least one
+`floor_staff` device registered, or drive a zone's count into
 `crowded` from the **Dev Tools** tab of the dev page
 `/dev/cameras/{cameraId}` (`APP_ENV=dev`, admin login; see
 [README](../README.md) step 11) with an `ops_manager` device registered.

@@ -23,7 +23,7 @@ class _UserById:
         self.user = user
 
     async def get(self, model, key, **kw):
-        return self.user if key == self.user.id else None
+        return self.user if key == self.user.user_id else None
 
     async def execute(self, stmt):
         user = self.user
@@ -138,7 +138,7 @@ def test_bad_scope_is_422(scope) -> None:
 def _claims(user, **over):
     now = datetime.now(UTC)
     claims = {
-        "sub": str(user.id),
+        "sub": str(user.user_id),
         "type": "ticket",
         "scope": "crowd:live",
         "iat": now,

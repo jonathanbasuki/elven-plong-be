@@ -17,7 +17,7 @@ def check_internal_key(key: str | None) -> None:
     key is blank (P2: blank key means reject everything, fail closed).
     """
     expected = get_settings().internal_api_key
-    # P2: blank expected key rejects every worker call, even in dev
+    # P2: blank expected key rejects every camera call, even in dev
     if not expected:
         raise AppError(401, "unauthenticated", "invalid internal api key")
     if not hmac.compare_digest((key or "").encode(), expected.encode()):

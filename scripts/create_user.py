@@ -29,7 +29,7 @@ async def create_user(email: str, full_name: str, role_name: str) -> None:
                 email=email.lower(),
                 full_name=full_name,
                 password_hash=PasswordHasher().hash(password),
-                role_id=role.id,
+                role_id=role.role_id,
             )
         )
         await session.commit()

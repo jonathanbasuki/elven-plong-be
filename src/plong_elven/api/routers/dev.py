@@ -8,7 +8,8 @@ token, kept in a JS variable (never localStorage):
 
 - POST /dev/cameras/{cameraId}/detections: manual counts.
 - POST /dev/tickets: 60-second tickets for the stream and the WebSocket.
-- /dev/cameras/{cameraId}/layout, /snapshot (admin token) and /stream (a
+- /dev/cameras/{cameraId}/layout (zones in the database, shared by every
+  camera), /snapshot (admin token) and /stream (a
   `stream:<cameraId>` ticket, because an <img> cannot send headers; the internal
   key is never accepted).
 
@@ -33,18 +34,20 @@ from plong_elven.api.deps import (
     get_camera_service,
     get_db,
     get_session_factory,
+    get_zone_service,
     require_role,
 )
 from plong_elven.api.routers.crowd import ingest_counts
 from plong_elven.db.models import User
 from plong_elven.schemas.common import CAMERA_ID_PATTERN
 from plong_elven.schemas.detections import DetectionIn
-from plong_elven.schemas.layout import ZonesIn
+from plong_elven.schemas.layout import LayoutZone, ZonesIn
 from plong_elven.schemas.tickets import TicketOut, TicketRequest
 from plong_elven.services.auth_service import AuthService
 from plong_elven.services.camera_service import CameraService
 from plong_elven.services.errors import AppError
 from plong_elven.services.internal.alert_service import AlertService
+from plong_elven.services.zone_service import ZoneService
 from plong_elven.state.live_state import LiveState, get_live_state
 
 BOUNDARY = b"frame"
@@ -118,11 +121,9 @@ _PAGE = """<!doctype html>
   <section id="tab-edit" class="tab">
     <div class="row">
       <button id="capture">Capture frame</button>
-      <select id="anchor">
-        <option value="bottom_center">bottom_center</option>
-        <option value="center">center</option>
-        <option value="top_center">top_center</option>
-      </select>
+      <label>zone id <input id="new-id" placeholder="next free" style="width:90px"></label>
+      <label>name <input id="new-name" placeholder="Zone N" style="width:110px"></label>
+      <label>threshold <input id="new-threshold" type="number" min="1" value="10" style="width:70px"></label>
       <button id="finish-zone">Finish zone (&gt;=3 points)</button>
       <button id="undo">Undo</button>
       <button id="save">Save</button>
@@ -136,11 +137,11 @@ _PAGE = """<!doctype html>
   </section>
 
   <section id="tab-dev" class="tab">
-    <p>Manually set a zone's detected crowd count, the same way the cctv worker's
-    counts are recorded. Lets you drive the frontend's Safe/Warning/Crowded states
+    <p>Manually set a zone's detected crowd count, the same way the camera's
+    counts are recorded. Lets you drive the frontend's Safe/Crowded states
     without real people in frame.</p>
-    <p style="color:#fb3">If the cctv worker is running at the same time, it will overwrite
-    this within ~1s (it posts a real count every second). Stop the worker first to keep a
+    <p style="color:#fb3">If the camera is running at the same time, it will overwrite
+    this within ~1s (it posts a real count every second). Stop the camera first to keep a
     manual value in place.</p>
     <div class="row">
       <select id="dev-zone"></select>
@@ -248,7 +249,7 @@ tabBtns.dev.onclick = () => showTab("dev");
 async function startStream() {
   const ticket = await mintTicket("stream:" + CAMERA_ID, liveStatus);
   if (!ticket) return;
-  stream.onerror = () => { liveStatus.textContent = "stream unavailable (is the cctv worker running?)"; };
+  stream.onerror = () => { liveStatus.textContent = "stream unavailable (is the camera running?)"; };
   stream.onload = () => { liveStatus.textContent = ""; };
   stream.src = `/dev/cameras/${CAMERA_ID}/stream?ticket=${encodeURIComponent(ticket)}`;
 }
@@ -265,16 +266,18 @@ async function startLive() {
     const msg = JSON.parse(ev.data);
     if (msg.cameraId !== CAMERA_ID) return;
     const el = document.getElementById("counts");
-    el.innerHTML = Object.entries(msg.counts)
-      .map(([id, n]) => `<span>${zoneNames[id] || id}: ${n}</span>`).join("");
+    el.replaceChildren(...Object.entries(msg.counts).map(([id, n]) => {
+      const span = document.createElement("span");
+      span.textContent = `${zoneNames[id] || id}: ${n}`;
+      return span;
+    }));
   };
   ws.onclose = () => { liveStatus.textContent = "live counts disconnected"; ws = null; };
 }
 
 // --- zone editor state ---
-let zones = [];       // [{id, name, polygon: [[x,y]...]}] normalized 0..1
+let zones = [];       // [{id, name, polygon: [[x,y]...], threshold}] normalized 0..1
 let current = [];     // points for the zone being drawn, normalized 0..1
-let anchor = "bottom_center";
 const snapshot = document.getElementById("snapshot");
 const overlay = document.getElementById("overlay");
 const ctx = overlay.getContext("2d");
@@ -286,7 +289,7 @@ function syncZoneNames() { zoneNames = {}; zones.forEach(z => zoneNames[z.id] = 
 function renderDevZones() {
   const sel = document.getElementById("dev-zone");
   const prev = sel.value;
-  sel.innerHTML = zones.map(z => `<option value="${z.id}">${z.id} (${z.name})</option>`).join("");
+  sel.replaceChildren(...zones.map(z => new Option(`${z.id} (${z.name})`, z.id)));
   if (zones.some(z => z.id === prev)) sel.value = prev;
 }
 
@@ -326,7 +329,26 @@ function renderZoneList() {
   ul.innerHTML = "";
   zones.forEach((z, i) => {
     const li = document.createElement("li");
-    li.innerHTML = `<span style="color:${colors[i % colors.length]}">&#9632;</span> ${z.name} (${z.polygon.length} pts) `;
+    const swatch = document.createElement("span");
+    swatch.style.color = colors[i % colors.length];
+    swatch.textContent = "\u25a0";
+    li.appendChild(swatch);
+    // textContent, not innerHTML: names are typed by hand.
+    li.appendChild(document.createTextNode(` ${z.id} ${z.name} (${z.polygon.length} pts) threshold `));
+    const th = document.createElement("input");
+    th.type = "number"; th.min = "1"; th.value = z.threshold; th.style.width = "70px";
+    th.onchange = () => { z.threshold = parseInt(th.value, 10) || 1; };
+    li.appendChild(th);
+    const again = document.createElement("button");
+    again.textContent = "Redraw";
+    again.onclick = () => {
+      document.getElementById("new-id").value = z.id;
+      document.getElementById("new-name").value = z.name;
+      document.getElementById("new-threshold").value = z.threshold;
+      current = []; redraw();
+      status.textContent = `click the new shape for ${z.id}, then Finish zone`;
+    };
+    li.appendChild(again);
     const del = document.createElement("button");
     del.textContent = "Delete";
     del.onclick = () => { zones.splice(i, 1); syncZoneNames(); renderZoneList(); redraw(); };
@@ -353,11 +375,33 @@ overlay.addEventListener("click", (ev) => {
   redraw();
 });
 
+// Draw a zone under the id typed in "zone id" (e.g. z2 with no z1), or the next
+// free zN when it is blank. An id that already exists is redrawn in place.
 document.getElementById("finish-zone").onclick = () => {
   if (current.length < 3) { status.textContent = "need at least 3 points"; return; }
-  const n = zones.length + 1;
-  zones.push({id: `z${n}`, name: `Zone ${n}`, polygon: current});
+  const idInput = document.getElementById("new-id");
+  const nameInput = document.getElementById("new-name");
+  let id = idInput.value.trim();
+  if (!id) {
+    let n = 1;
+    while (zones.some(z => z.id === `z${n}`)) n++;
+    id = `z${n}`;
+  }
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(id)) {
+    status.textContent = "zone id: letters, digits, - and _ only (max 64)";
+    return;
+  }
+  const num = /^z(\\d+)$/.exec(id);
+  const name = nameInput.value.trim() || (num ? `Zone ${num[1]}` : id);
+  const threshold = parseInt(document.getElementById("new-threshold").value, 10) || 10;
+  const existing = zones.find(z => z.id === id);
+  if (existing) Object.assign(existing, {name, polygon: current, threshold});
+  else zones.push({id, name, polygon: current, threshold});
+  zones.sort((a, b) => a.id.localeCompare(b.id, undefined, {numeric: true}));
   current = [];
+  idInput.value = ""; nameInput.value = "";
+  document.getElementById("new-threshold").value = "10";
+  status.textContent = `${existing ? "redrew" : "added"} ${id} (not saved yet)`;
   syncZoneNames(); renderZoneList(); redraw();
 };
 
@@ -367,14 +411,12 @@ document.getElementById("undo").onclick = () => {
   syncZoneNames(); renderZoneList(); redraw();
 };
 
-document.getElementById("anchor").onchange = (ev) => { anchor = ev.target.value; };
-
 document.getElementById("save").onclick = async () => {
   status.textContent = "saving...";
   const resp = await api(`/dev/cameras/${CAMERA_ID}/layout`, {
     method: "PUT",
     headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({anchor, zones}),
+    body: JSON.stringify({zones}),
   });
   if (!resp) return;
   if (!resp.ok) { status.textContent = `save failed: ${await errorMessage(resp)}`; return; }
@@ -399,8 +441,6 @@ async function loadLayout() {
   if (!resp.ok) { status.textContent = `layout failed: ${await errorMessage(resp)}`; return; }
   const cfg = await resp.json();
   zones = cfg.zones || [];
-  anchor = cfg.anchor || "bottom_center";
-  document.getElementById("anchor").value = anchor;
   syncZoneNames(); renderZoneList();
 }
 </script>
@@ -443,7 +483,7 @@ async def post_manual_count(
     factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),  # noqa: B008
     alerts: AlertService = Depends(get_alert_service),  # noqa: B008
 ) -> dict:
-    """Manual count from the dev page; same ingest path as the worker route."""
+    """Manual count from the dev page; same ingest path as the camera route."""
     await ingest_counts(
         cameraId, detection.counts, background_tasks, live, factory, alerts
     )
@@ -484,10 +524,10 @@ async def _stream_ticket_user(
 async def get_layout(
     cameraId: str = Path(pattern=CAMERA_ID_PATTERN),
     _: User = Depends(require_role("admin")),  # noqa: B008
-    svc: CameraService = Depends(get_camera_service),  # noqa: B008
-) -> dict:
-    """The shared zone layout (one file for all cameras today)."""
-    return svc.get_layout()
+    svc: ZoneService = Depends(get_zone_service),  # noqa: B008
+) -> dict[str, list[LayoutZone]]:
+    """All zones from the database (one shared set for every camera today)."""
+    return {"zones": await svc.get_layout()}
 
 
 @camera_router.put("/layout")
@@ -495,9 +535,12 @@ async def put_layout(
     body: ZonesIn,
     cameraId: str = Path(pattern=CAMERA_ID_PATTERN),
     _: User = Depends(require_role("admin")),  # noqa: B008
-    svc: CameraService = Depends(get_camera_service),  # noqa: B008
+    svc: ZoneService = Depends(get_zone_service),  # noqa: B008
 ) -> dict:
-    count = svc.save_layout(body.anchor, [z.model_dump() for z in body.zones])
+    """Replace the zone set in the database. Zones left out are deleted
+    (409 zone_in_use if one has tasks). The camera picks the change up within
+    a few seconds."""
+    count = await svc.save_layout(body.zones)
     return {"status": "ok", "zones": count}
 
 

@@ -1,9 +1,10 @@
-"""Headless people counter: reads a camera/video/RTSP source, detects people, assigns them
-to zones, and POSTs per-zone counts (and, unless --no-stream, annotated JPEG frames for
-GET /stream/{camera_id}) to the API. No local display window; for an on-screen preview
-with the same overlay, use plong-model's run.py instead.
+"""The camera process (headless people counter): reads a camera/video/RTSP source,
+detects people, assigns them to the zones it reads from the API, and POSTs per-zone
+counts (and, unless --no-stream, annotated and raw JPEG frames for the dev page) to
+the API. No local display window; for an on-screen preview with the same overlay,
+use plong-model's run.py instead.
 
-  uv run python -m plong_elven.cctv 1 --zones zones.json
+  uv run python -m plong_elven.cctv 1
   uv run python -m plong_elven.cctv rtsp://127.0.0.1:8554/cam1_sub --camera-id cam1
 """
 
@@ -14,10 +15,11 @@ import time
 import cv2
 
 from . import zones as z
-from .client import post_counts, post_frame
+from .client import fetch_zones, post_counts, post_frame
 from .detector import Detector
 from .overlay import draw
 from .uploader import LatestUploader
+from .zones_poller import ZonesPoller
 
 # Without this, OpenCV's RTSP (FFmpeg) backend has no read timeout: on a stall (e.g. a
 # flaky Wi-Fi link), cap.read() blocks forever instead of failing so the loop can recover.
@@ -26,15 +28,7 @@ os.environ.setdefault(
     "OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp|stimeout;5000000"
 )
 RECONNECT_DELAY = 2.0  # seconds to wait before reopening a dropped source
-ZONES_RELOAD_INTERVAL = 2.0  # seconds between checking the zones file for edits
-
-
-def load_zones(path: str) -> dict:
-    return (
-        z.load_config(path)
-        if os.path.exists(path)
-        else {"anchor": "bottom_center", "zones": []}
-    )
+ZONES_POLL_INTERVAL = 5.0  # seconds between reading the zone list from the API
 
 
 def open_source(src: str) -> cv2.VideoCapture:
@@ -49,7 +43,7 @@ def open_source(src: str) -> cv2.VideoCapture:
 
 def reconnect(src: str) -> cv2.VideoCapture:
     """Keep retrying rather than exiting: a dropped camera/RTSP link should recover on
-    its own once the network comes back, not take the whole worker down with it."""
+    its own once the network comes back, not take the whole camera process down with it."""
     while True:
         try:
             return open_source(src)
@@ -59,9 +53,11 @@ def reconnect(src: str) -> cv2.VideoCapture:
 
 
 def run(args: argparse.Namespace) -> None:
-    cfg = load_zones(args.zones)
-    zones_mtime = os.path.getmtime(args.zones) if os.path.exists(args.zones) else None
-    anchor = args.anchor or cfg["anchor"]
+    poller = ZonesPoller(
+        lambda client: fetch_zones(client, args.api_base, args.api_key, args.camera_id),
+        ZONES_POLL_INTERVAL,
+    )
+    poller.start()
     det = Detector(args.model, args.imgsz, args.device)
     cap = open_source(args.source)
     counts_uploader = LatestUploader(
@@ -82,7 +78,8 @@ def run(args: argparse.Namespace) -> None:
     counts_uploader.start()
     annotated_uploader.start()
     raw_uploader.start()
-    polys, size, last_post, last_frame, last_zones_check = None, None, 0.0, 0.0, 0.0
+    zones, zones_version = [], -1
+    polys, size, last_post, last_frame = None, None, 0.0, 0.0
 
     try:
         while True:
@@ -96,30 +93,21 @@ def run(args: argparse.Namespace) -> None:
                 continue
 
             now = time.monotonic()
-            if now - last_zones_check >= ZONES_RELOAD_INTERVAL:
-                last_zones_check = now
-                mtime = (
-                    os.path.getmtime(args.zones) if os.path.exists(args.zones) else None
-                )
-                if mtime != zones_mtime:
-                    try:
-                        cfg = load_zones(args.zones)
-                        anchor = args.anchor or cfg["anchor"]
-                        size = None  # re-derive polygons against the new zones
-                        print(f"reloaded {args.zones!r} ({len(cfg['zones'])} zone(s))")
-                    except ValueError as e:
-                        print(f"ignoring invalid {args.zones!r}: {e}")
-                    zones_mtime = mtime
+            if poller.version != zones_version:  # zones edited in the database
+                # Version first: if the poller swaps the list between these two
+                # reads, the next frame sees a newer version and reloads again.
+                zones_version, zones = poller.version, poller.zones
+                size = None  # re-derive polygons against the new zones
 
             h, w = frame.shape[:2]
             if (w, h) != size:  # read real frame size, never hardcode it
-                size, polys = (w, h), z.to_pixels(cfg, w, h)
+                size, polys = (w, h), z.to_pixels(zones, w, h)
             boxes, _, _ms = det(frame, args.conf)
-            zi = z.assign(boxes, polys, anchor)
+            zi = z.assign(boxes, polys, args.anchor)
             n = z.counts(zi, len(polys))
 
             if now - last_post >= args.post_interval:
-                counts = {zone["id"]: int(k) for zone, k in zip(cfg["zones"], n)}
+                counts = {zone["id"]: int(k) for zone, k in zip(zones, n)}
                 if args.dry_run:
                     print(counts)
                 else:
@@ -127,7 +115,7 @@ def run(args: argparse.Namespace) -> None:
                 last_post = now
 
             if not args.no_stream and now - last_frame >= args.frame_interval:
-                labels = [f"{zone['name']}: {k}" for zone, k in zip(cfg["zones"], n)]
+                labels = [f"{zone['name']}: {k}" for zone, k in zip(zones, n)]
                 annotated = draw(
                     frame.copy(), boxes, zi, polys, labels, [f"total: {len(boxes)}"]
                 )
@@ -145,6 +133,7 @@ def run(args: argparse.Namespace) -> None:
                 last_frame = now
     finally:
         cap.release()
+        poller.close()
         counts_uploader.close()
         annotated_uploader.close()
         raw_uploader.close()
@@ -153,14 +142,16 @@ def run(args: argparse.Namespace) -> None:
 def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("source", nargs="?", default=os.environ.get("RTSP_URL", "0"))
-    p.add_argument("--zones", default="zones.json")
     p.add_argument(
         "--model", default=os.environ.get("YOLO_WEIGHTS", "models/yolo26n.pt")
     )
     p.add_argument("--imgsz", type=int, default=640)
     p.add_argument("--conf", type=float, default=0.25)
     p.add_argument(
-        "--anchor", choices=z.ANCHORS, help="override the anchor in the zones file"
+        "--anchor",
+        choices=z.ANCHORS,
+        default=os.environ.get("CAMERA_ANCHOR") or "bottom_center",
+        help="which point of a person's box decides their zone",
     )
     p.add_argument(
         "--device", default=os.environ.get("YOLO_DEVICE"), help="e.g. mps or cpu"
@@ -186,7 +177,7 @@ def main() -> None:
         "--frame-interval",
         type=float,
         default=0.2,
-        help="seconds between frames posted for GET /stream/{camera_id}",
+        help="seconds between frames posted for the dev page's stream",
     )
     p.add_argument("--jpeg-quality", type=int, default=80)
     p.add_argument(

@@ -1,6 +1,6 @@
 # Architecture (as built)
 
-This describes the code on `dev/api-contract-rework`. Routes are listed in
+This describes the code on `dev/readjust-erd`. Routes are listed in
 [API_REFERENCE.md](API_REFERENCE.md), settings in [CONFIGURATION.md](CONFIGURATION.md).
 
 ## Processes
@@ -8,7 +8,7 @@ This describes the code on `dev/api-contract-rework`. Routes are listed in
 | Process | Entry point | Talks to |
 |---|---|---|
 | API | `uvicorn plong_elven.api.main:app` (`make api`) | Postgres, APNs, browsers/iOS app |
-| CCTV worker | `python -m plong_elven.cctv` (`make cctv`) | camera (RTSP/index/file), API over HTTP |
+| Camera process | `python -m plong_elven.cctv` (`make cctv`) | CCTV device (RTSP/index/file), API over HTTP |
 | Postgres 16 | `infra/docker-compose.yml` (`make db-up`) | API, Alembic |
 
 ## Layers
@@ -28,15 +28,15 @@ state (state/live_state.py)  in-memory LiveState singleton
   when `APP_ENV=dev`, and installs three exception handlers (`AppError`,
   `HTTPException`, `RequestValidationError`) that all return
   `{"error": {"code", "message"}}`.
-- Services (one per feature, in `services/`): `AuthService`, `BroadcastService`,
+- Services (one per feature, in `services/`): `AuthService`, `TaskService`,
   `CrowdService`, `ZoneService`, `CameraService`. `profile`, `staff` and `dev` have no
-  service of their own: they reuse `AuthService`, `BroadcastService` and others.
+  service of their own: they reuse `AuthService`, `TaskService` and others.
 - Internal services (no route of their own, in `services/internal/`): `AlertService`,
   `NotificationService`. Only other services call them.
 - Adapters (talk to the outside world, in `adapters/`): `ApnsPushSender`.
 - Helpers (plain functions, no state, in `helpers/`): `zone_status.classify`.
 - `services/errors.py` defines `AppError(status_code, code, message)`.
-- `tests/test_broadcast_service.py` checks that `broadcast_service.py` does not
+- `tests/test_task_service.py` checks that `task_service.py` does not
   contain the string `fastapi`.
 
 ### Interfaces (`services/ports.py`)
@@ -48,17 +48,17 @@ state (state/live_state.py)  in-memory LiveState singleton
 
 `Alert` is a frozen dataclass: `key`, `cooldown`, `audience_role`, `title`, `body`.
 
-`default_alert_rules()` returns two `StatusChangeRule`s: `warning` and `crowded`,
-both with a 5-minute cooldown, audience `ops_manager`. A rule fires only when
-the zone newly enters its status. `AlertService.on_count()` stores the new
+`default_alert_rules()` returns one `StatusChangeRule`, `crowded`, with a
+5-minute cooldown, audience `ops_manager`. It fires only when the zone newly
+becomes crowded. `AlertService.on_count()` stores the new
 status in `LiveState.last_status`, skips an alert whose `(zone, key)` cooldown
 has not passed (`LiveState.last_alert_sent_at`), and calls
 `NotificationService.notify_role()`. `NotificationService` opens its own
-session, selects `push_token` of every user with that role, and calls the
-`PushSender`.
+session, selects `push_token` of every user with that role (optionally
+skipping users whose home zone is a given zone), and calls the `PushSender`.
 
-Status is `helpers/zone_status.classify()`: `safe` below `warning_threshold`,
-`warning` below `crowded_threshold`, else `crowded`.
+Status is `helpers/zone_status.classify()`: `safe` below the zone's
+`threshold`, else `crowded`.
 
 ### LiveState (`state/live_state.py`)
 
@@ -77,7 +77,8 @@ override it). Fields:
 ## Detection flow
 
 ```
-camera --(RTSP/index/file)--> cctv worker (YOLO person detection, zone assign)
+CCTV device --(RTSP/index/file)--> camera process (YOLO person detection, zone assign)
+   |  every 5 s (background thread): GET /api/v1/cameras/{id}/zones  (polygons from the DB)
    |  every --post-interval (1 s): POST /api/v1/cameras/{id}/detections  {"counts": {...}}
    |  every --frame-interval (0.2 s): POST /api/v1/cameras/{id}/frames and /frames/raw (JPEG)
    v
@@ -86,14 +87,14 @@ API cameras router (X-Internal-Api-Key)
    |     1. CrowdService.record_live -> LiveState.counts / observed_at   (sync, in request)
    |     2. publish_counts -> every WS /api/v1/crowd/live client gets {"cameraId","counts"}
    |     3. BackgroundTask process_counts_in_new_session (own session):
-   |          for each zone id that exists in the DB `zones` table:
-   |            record_sample -> 5-min bucket; on rollover INSERT zone_count_history
+   |          for each zone id that exists in the DB `zone` table:
+   |            record_sample -> 5-min bucket; on rollover INSERT zone_logs
    |            AlertService.on_count -> NotificationService -> PushSender (APNs)
    v
-GET /api/v1/zones/{id}/crowd reads LiveState; /crowd/history reads zone_count_history
+GET /api/v1/zones/{id}/crowd reads LiveState; /crowd/history reads zone_logs
 ```
 
-- The worker's uploader (`cctv/uploader.py`) keeps only the newest pending item
+- The camera's uploader (`cctv/uploader.py`) keeps only the newest pending item
   and backs off from 0.5 s to 10 s on failure; post errors are logged, not raised.
 - A history bucket is flushed only when the next sample for that zone arrives in a
   new window. There is no timer.
@@ -101,28 +102,38 @@ GET /api/v1/zones/{id}/crowd reads LiveState; /crowd/history reads zone_count_hi
 - Frames go to `LiveState.frames` / `raw_frames`; the dev router serves them as
   `/dev/cameras/{id}/snapshot` and an MJPEG `/stream` (re-sent every 0.2 s).
 
-## Broadcast (dispatch) flow
+## Task flow
 
-`services/broadcast_service.py`:
+`services/task_service.py`. Statuses are lookup tables with fixed ids
+(`TaskStatusId`, `TaskRespondentStatusId`, `UserStatusId` in `db/models.py`,
+seeded by migration `5c8d2e1f9a63`); the API shows their lowercase names.
 
-1. `ops_manager` creates (`POST /api/v1/broadcasts`): zone must exist; one open
-   broadcast per zone (409 `broadcast_open`, also enforced by the partial unique
-   index `one_open_broadcast_per_zone`); `expires_at = now + 20 s`. A background
-   task pushes "New broadcast" to all `floor_staff`.
-2. `floor_staff` accepts: `SELECT ... FOR UPDATE` locks the broadcast row first,
-   so two staff racing for the last slot are serialized. Then: expired -> close,
-   409 `expired`; already accepted -> return current state (idempotent); user
-   `status == "delegating"` -> 409 `already_delegating`; slots taken -> 409
-   `slots_full`. On success a `broadcast_responses` row is added and the user's
-   status becomes `delegating`. `tests/test_broadcast_race_pg.py` proves the lock
-   against real Postgres.
-3. `floor_staff` completes: 403 `not_your_response` if they did not accept; sets
-   `completed_at`, user status back to `idle`.
+1. `ops_manager` broadcasts (`POST /api/v1/tasks/broadcast`): the zone row is
+   locked (`SELECT ... FOR UPDATE`), expired tasks in the zone are closed, then
+   `409 broadcast_open` if `zone.is_active_task`. Otherwise a task is created
+   (`open`, `expires_at = now + 20 s`, required `instruction` ≤ 50 chars) and
+   `zone.is_active_task` becomes true. A background task pushes "New task" to
+   all `floor_staff` whose home zone (`users.zone_id`) is not this zone. The
+   partial unique index `one_open_task_per_zone` (`task_status_id = 1`) is a
+   second guard.
+2. `floor_staff` accepts: `SELECT ... FOR UPDATE` locks the task row first, so
+   two staff racing for the last slot are serialized. Then: not open (or just
+   expired, which closes it) -> 409 `expired`; already accepted -> return
+   current state (idempotent); home zone is the task's zone -> 409 `own_zone`;
+   user `delegating` -> 409 `already_delegating`; slots taken -> 409
+   `slots_full`. On success a `task_respondents` row (`ongoing`) is added and
+   the user becomes `delegating`.
+3. `floor_staff` completes: 403 `not_your_response` if they did not accept;
+   the first call sets the respondent `completed` + `completed_at` and the
+   user back to `idle`; a repeat call changes nothing.
 4. `ops_manager` finishes: 409 `not_all_done` unless at least one accepted and
-   all accepted completed; sets status `finished` and `finished_at`.
+   all accepted completed; sets `finished`, `finished_at`, and
+   `zone.is_active_task = false`.
 
-Listing closes expired open broadcasts and commits before it queries, so
-`status=open` never returns an expired one.
+Expiry is lazy (`close_expired_tasks`): reading tasks, reading zones,
+broadcasting, accepting or finishing closes open tasks past `expires_at`. A
+task that closes with no respondents also clears `zone.is_active_task`.
+`tests/test_task_race_pg.py` proves both row locks against real Postgres.
 
 ## Auth model
 
@@ -131,7 +142,7 @@ Listing closes expired open broadcasts and commits before it queries, so
 | iOS app / API clients | `Authorization: Bearer <access JWT>` (HS256, `type=access`, `ACCESS_TOKEN_MINUTES`, default 15) | `deps.get_current_user` -> `AuthService.user_from_access_token`; user must be active |
 | Role-gated routes | same bearer + role name | `deps.require_role(...)`; roles do not inherit (admin has no dispatch powers) |
 | Token refresh | opaque refresh token (48 bytes, stored as SHA-256 in `refresh_tokens`, `REFRESH_TOKEN_DAYS`, default 30) | `/auth/refresh` revokes the old token and issues a new pair (rotation); `/auth/logout` revokes it and clears the user's `push_token` |
-| CCTV worker | `X-Internal-Api-Key` header | `api/security.check_internal_key`, constant-time compare; a blank configured key rejects every call, even in dev; bearer tokens are not accepted here |
+| Camera process | `X-Internal-Api-Key` header | `api/security.check_internal_key`, constant-time compare; a blank configured key rejects every call, even in dev; bearer tokens are not accepted here |
 | Dev page stream / WS from a browser | `?ticket=` JWT (`type=ticket`, scope `stream:<cameraId>` or `crowd:live`, 60 s) | `AuthService.verify_ticket`; user must be active **and** admin. Tickets are minted only by `POST /dev/tickets`, which exists only with `APP_ENV=dev` |
 
 `WS /api/v1/crowd/live` accepts either a bearer header or a `crowd:live` ticket,
@@ -149,17 +160,17 @@ src/plong_elven/
     main.py            create_app, error handlers, /healthz, /readyz
     deps.py            DI: current user, roles, internal key, services
     security.py        X-Internal-Api-Key check
-    routers/           auth, profile, zones, crowd (+WS), broadcasts, staff, cameras, dev
-  services/            auth, broadcast, crowd, zone, camera, ports, errors
+    routers/           auth, profile, zones, crowd (+WS), tasks, staff, cameras, dev
+  services/            auth, task, crowd, zone, camera, ports, errors
     internal/          alert, notification (no route of their own)
   adapters/            apns_sender (talks to Apple)
   helpers/             zone_status.classify (plain functions)
   schemas/             Pydantic request/response models (camelCase)
   state/live_state.py  in-memory LiveState
-  db/                  base, models (roles, users, refresh_tokens, zones, zone_count_history, broadcasts, broadcast_responses), session
-  common/              settings, zones.json load/save/validate
-  cctv/                worker: loop (CLI), detector (YOLO), zones (pixel math), overlay, client, uploader
-alembic/versions/      5 migrations
+  db/                  base, models (roles, users, user_status, refresh_tokens, zone, zone_logs, task, task_status, task_respondents, task_respondent_status), session
+  common/              settings
+  cctv/                camera process: loop (CLI), detector (YOLO), zones (pixel math), zones_poller, overlay, client, uploader
+alembic/versions/      8 migrations
 scripts/               create_user, seed_dispatch, doctor, generate_mediamtx_config, benchmark_cctv
 infra/docker-compose.yml  Postgres 16
 tests/
@@ -172,11 +183,12 @@ tests/
   worker splits them (the `dev.py` docstring says to swap to Redis if that happens).
 - **State is lost on restart.** Counts reset to 0 (`observedAt` null), an open
   history bucket is dropped, and cooldowns reset.
-- **Two zone sources.** The worker counts zones from `zones.json` (`ZONES_PATH`),
-  edited via `PUT /dev/cameras/{id}/layout`. Zone reads, thresholds, history and
-  alerts use the DB `zones` table. Counts for an id not in the DB still update
-  live state and the WebSocket, but get no history and no alerts. The layout file
-  is one shared file for all cameras. `scripts/seed_dispatch.py` copies only the
-  first zone of `zones.json` into the DB.
-- Broadcast listing does N+1 count queries per broadcast (fine at limit <= 50, per
+- **One shared zone set.** Zones live only in the DB `zone` table. Every
+  camera reads the same set (there is no camera-to-zone mapping yet). Counts
+  for an id not in the DB still update live state and the WebSocket, but get
+  no history and no alerts. A zone with tasks cannot be deleted.
+- **A task with an unfinished respondent keeps its zone active.** If a
+  respondent never completes, the zone cannot be broadcast again; there is no
+  cancel action yet.
+- Task listing does one respondent query per task (fine at limit <= 50, per
   a code comment).

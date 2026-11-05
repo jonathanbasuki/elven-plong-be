@@ -9,7 +9,7 @@ from plong_elven.api.main import app
 from plong_elven.db.session import get_db
 
 PROFILE = "/api/v1/profile"
-CREATE_BROADCAST = "/api/v1/broadcasts"
+BROADCAST_TASK = "/api/v1/tasks/broadcast"
 
 
 def _error(response, status, code):
@@ -30,7 +30,8 @@ def test_403_shape() -> None:
     app.dependency_overrides[get_current_user] = lambda: fake_user("floor_staff")
     try:
         response = TestClient(app).post(
-            CREATE_BROADCAST, json={"zoneId": "z1", "staffNeeded": 1}
+            BROADCAST_TASK,
+            json={"zoneId": "z1", "totalStaff": 1, "instruction": "x"},
         )
     finally:
         app.dependency_overrides.clear()
