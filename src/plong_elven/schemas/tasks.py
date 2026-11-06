@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field, StringConstraints
 
 from plong_elven.schemas.zones import UtcDatetime
 
-TaskStatus = Literal["open", "closed", "finished"]
+TaskStatus = Literal["open", "ongoing", "closed", "finished", "complete"]
 RespondentStatus = Literal["ongoing", "completed"]
 
 
@@ -54,3 +54,10 @@ class StaffOut(BaseModel):
     name: str
     status: Literal["idle", "delegating"]
     zoneId: str | None
+
+
+class TaskFootageOut(BaseModel):
+    taskId: UUID
+    status: Literal["processing", "ready", "failed"]
+    url: str | None = None
+    error: str | None = None

@@ -32,6 +32,8 @@ class TaskStatusId(IntEnum):
     OPEN = 1
     CLOSED = 2
     FINISHED = 3
+    COMPLETE = 4
+    ONGOING = 5
 
 
 class TaskRespondentStatusId(IntEnum):
@@ -282,3 +284,23 @@ class TaskRespondent(Base):
 
     task: Mapped[Task] = relationship(back_populates="respondents")
     staff: Mapped[User] = relationship(back_populates="task_responses")
+
+
+class TaskFootage(Base):
+    __tablename__ = "task_footage"
+
+    task_id: Mapped[UUID] = mapped_column(
+        ForeignKey("task.task_id", ondelete="CASCADE"), primary_key=True
+    )
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="processing"
+    )
+    object_path: Mapped[str | None] = mapped_column(Text)
+    public_url: Mapped[str | None] = mapped_column(Text)
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )

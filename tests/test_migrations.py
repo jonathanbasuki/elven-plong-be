@@ -18,9 +18,16 @@ def _script() -> ScriptDirectory:
 def test_migrations_form_one_linear_chain() -> None:
     script = _script()
     (head,) = script.get_heads()
-    assert head == "8e4b7a0d2c15"
+    assert head == "d2e3f4a5b6c7"
     chain = [rev.revision for rev in script.walk_revisions()]
-    assert chain[:4] == ["8e4b7a0d2c15", "5c8d2e1f9a63", "3f1a9c2e7b40", "a1b2c3d4e5f6"]
+    assert chain[:6] == [
+        "d2e3f4a5b6c7",
+        "c1d2e3f4a5b6",
+        "8e4b7a0d2c15",
+        "5c8d2e1f9a63",
+        "3f1a9c2e7b40",
+        "a1b2c3d4e5f6",
+    ]
 
 
 def test_admin_role_migration_seeds_id_3() -> None:

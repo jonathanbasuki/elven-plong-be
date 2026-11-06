@@ -31,7 +31,7 @@ models:
 
 mediamtx-config: ; uv run --env-file .env python scripts/generate_mediamtx_config.py
 mediamtx: mediamtx-config
-	docker run --rm --name mediamtx -p 8554:8554 -p 8888:8888 -v "$(CURDIR)/infra/mediamtx.yml:/mediamtx.yml:ro" bluenviron/mediamtx:latest
+	docker run --rm --name mediamtx -p 8554:8554 -p 8888:8888 -v "$(CURDIR)/infra/mediamtx.yml:/mediamtx.yml:ro" -v "$(CURDIR)/recordings:/recordings" bluenviron/mediamtx:latest
 
 lint:        ; uv run ruff check . && uv run ruff format --check .
 test:        ; uv run pytest

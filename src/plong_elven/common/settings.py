@@ -19,6 +19,12 @@ class Settings(BaseSettings):
     apns_team_id: str = ""
     apns_topic: str = ""  # the app's bundle id
     apns_use_sandbox: bool = True
+    supabase_url: str = ""
+    supabase_service_role_key: str = ""
+    supabase_footage_bucket: str = "plong-task-footage"
+    mediamtx_recordings_dir: str = "./recordings"
+    mediamtx_record_path: str = "cam1"
+    mediamtx_record_segment_seconds: int = 2
 
 
 def check_security_settings(s: Settings) -> None:

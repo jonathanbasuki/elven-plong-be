@@ -3,7 +3,8 @@
 Task rules:
 - A manager starts a task by broadcasting it to floor staff. A zone with an
   active task (zone.is_active_task) cannot be broadcast again.
-- A task takes acceptances for 20 seconds, then closes. Expiry is lazy: it is
+- A task takes acceptances for 20 seconds, then becomes ongoing if at least one
+  staff member accepted it, or closes if nobody accepted. Expiry is lazy: it is
   applied by whichever call reads the task next (close_expired_tasks).
 - A zone stops being active when its task is finished, or when the task closes
   with no respondents at all (nobody came, so there is nothing to finish).
@@ -22,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from plong_elven.db.models import (
     Task,
+    TaskFootage,
     TaskRespondent,
     TaskRespondentStatusId,
     TaskStatusId,
@@ -37,6 +39,7 @@ from plong_elven.schemas.tasks import (
     TaskStatus,
 )
 from plong_elven.services.errors import AppError
+from plong_elven.services.footage_service import process_task_footage
 
 if TYPE_CHECKING:
     from plong_elven.services.internal.notification_service import NotificationService
@@ -77,10 +80,12 @@ async def _free_zone_if_latest(session: AsyncSession, task: Task) -> None:
 
 
 async def _close(session: AsyncSession, task: Task) -> None:
-    """Close an open task. With no respondents the zone is free again."""
-    task.task_status_id = TaskStatusId.CLOSED
+    """End the gathering window and start or close the task."""
     if await _respondent_count(session, task.task_id) == 0:
+        task.task_status_id = TaskStatusId.CLOSED
         await _free_zone_if_latest(session, task)
+    else:
+        task.task_status_id = TaskStatusId.ONGOING
 
 
 async def close_expired_tasks(
@@ -240,17 +245,17 @@ class TaskService:
         """Accept a task and return its updated state. Locks the task row first."""
         task = await self._find_task(task_id)
 
-        if await self._close_if_expired(task, datetime.now(UTC)):
-            await self._session.commit()
-        # Covers both "just expired" and already closed/finished tasks.
-        if task.task_status_id != TaskStatusId.OPEN:
-            raise AppError(409, "expired", "This task is no longer open.")
-
         existing = await self._session.get(
             TaskRespondent, {"task_id": task_id, "staff_id": user.user_id}
         )
         if existing is not None:
             return await self._task_out(task)  # idempotent
+
+        if await self._close_if_expired(task, datetime.now(UTC)):
+            await self._session.commit()
+        # Covers both "just expired" and already closed/finished tasks.
+        if task.task_status_id != TaskStatusId.OPEN:
+            raise AppError(409, "expired", "This task is no longer open.")
 
         if user.zone_id is not None and user.zone_id == task.zone_id:
             raise AppError(
@@ -291,7 +296,18 @@ class TaskService:
             respondent.task_respondent_status_id = TaskRespondentStatusId.COMPLETED
             respondent.completed_at = datetime.now(UTC)
             user.user_status_id = UserStatusId.IDLE
+            accepted = await _respondent_count(self._session, task_id)
+            completed = await _respondent_count(self._session, task_id, True)
+            if accepted > 0 and completed == accepted:
+                task.task_status_id = TaskStatusId.COMPLETE
+                task.finished_at = respondent.completed_at
+                await _free_zone_if_latest(self._session, task)
+                self._session.add(TaskFootage(task_id=task_id))
             await self._session.commit()
+            if task.task_status_id == TaskStatusId.COMPLETE:
+                import asyncio
+
+                asyncio.create_task(process_task_footage(task_id))
         return await self._task_out(task)
 
     async def finish(self, task_id: UUID) -> FinishOut:
@@ -309,7 +325,7 @@ class TaskService:
                 "not_all_done",
                 "All accepted staff members must complete before finishing.",
             )
-        if task.task_status_id != TaskStatusId.FINISHED:
+        if task.task_status_id not in (TaskStatusId.FINISHED, TaskStatusId.COMPLETE):
             task.task_status_id = TaskStatusId.FINISHED
             task.finished_at = datetime.now(UTC)
             await _free_zone_if_latest(self._session, task)
@@ -317,6 +333,16 @@ class TaskService:
         return FinishOut(
             taskId=task.task_id, status="finished", finishedAt=task.finished_at
         )
+
+    async def cancel(self, task_id: UUID) -> TaskOut:
+        """Cancel a task while its staff-gathering window is still open."""
+        task = await self._find_task(task_id)
+        if task.task_status_id != TaskStatusId.OPEN:
+            raise AppError(409, "not_open", "Only open tasks can be cancelled.")
+        task.task_status_id = TaskStatusId.CLOSED
+        await _free_zone_if_latest(self._session, task)
+        await self._session.commit()
+        return await self._task_out(task)
 
     async def get_staff(self, staff_id: UUID) -> StaffOut:
         """Get staff member information."""

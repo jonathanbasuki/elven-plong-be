@@ -34,3 +34,5 @@ uploads/
 runs/
 tools/
 *.mp4
+
+recordings/*
