@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     supabase_footage_bucket: str = "plong-task-footage"
     mediamtx_recordings_dir: str = "./recordings"
     mediamtx_record_path: str = "cam1"
-    mediamtx_record_segment_seconds: int = 10
+    mediamtx_record_segment_seconds: int = 2
 
 
 def check_security_settings(s: Settings) -> None:
