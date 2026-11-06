@@ -21,7 +21,13 @@ down_revision: str | Sequence[str] | None = "3f1a9c2e7b40"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
-TASK_STATUSES = [(1, "open"), (2, "closed"), (3, "finished")]
+TASK_STATUSES = [
+    (1, "open"),
+    (2, "closed"),
+    (3, "finished"),
+    (4, "complete"),
+    (5, "ongoing"),
+]
 RESPONDENT_STATUSES = [(1, "ongoing"), (2, "completed")]
 USER_STATUSES = [(1, "idle"), (2, "delegating")]
 

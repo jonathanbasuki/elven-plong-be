@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field, StringConstraints
 
 from plong_elven.schemas.zones import HistoryBucketOut, UtcDatetime
 
-TaskStatus = Literal["open", "closed", "finished"]
+TaskStatus = Literal["open", "ongoing", "closed", "finished", "complete"]
 RespondentStatus = Literal["ongoing", "completed"]
 
 
@@ -83,3 +83,10 @@ class TaskDetailOut(BaseModel):
     crowdLog: list[HistoryBucketOut]
     zoneStaff: list[StaffOut]
     delegatedStaff: list[AcceptedStaffOut]
+
+
+class TaskFootageOut(BaseModel):
+    taskId: UUID
+    status: Literal["processing", "ready", "failed"]
+    url: str | None = None
+    error: str | None = None
