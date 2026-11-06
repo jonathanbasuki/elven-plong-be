@@ -13,6 +13,7 @@ ROUTES = {
     ("POST", "/api/v1/tasks/{taskId}/accept"),
     ("POST", "/api/v1/tasks/{taskId}/complete"),
     ("POST", "/api/v1/tasks/{taskId}/finish"),
+    ("POST", "/api/v1/tasks/{taskId}/cancel"),
     ("GET", "/api/v1/staff/{staffId}"),
     ("POST", "/dev/tickets"),
     ("GET", "/api/v1/zones"),
