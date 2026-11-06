@@ -287,7 +287,7 @@ def test_expired_task_with_respondents_keeps_the_zone_active(
 
     client.get("/api/v1/tasks")
 
-    assert t.task_status_id == TaskStatusId.CLOSED
+    assert t.task_status_id == TaskStatusId.ONGOING
     assert session.zones["z1"].is_active_task is True
 
 

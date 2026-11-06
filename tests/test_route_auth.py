@@ -285,6 +285,7 @@ ROLE_MATRIX = {
     ("GET", "/api/v1/zones/{zoneId}/crowd"): ANY,
     ("GET", "/api/v1/zones/{zoneId}/crowd/history"): ANY,
     ("GET", "/api/v1/tasks"): ANY,
+    ("GET", "/api/v1/tasks/{taskId}/footage"): ANY,
     ("GET", "/api/v1/staff/{staffId}"): ANY,
     ("POST", "/api/v1/tasks/broadcast"): {"ops_manager"},
     ("POST", "/api/v1/tasks/{taskId}/accept"): {"floor_staff"},

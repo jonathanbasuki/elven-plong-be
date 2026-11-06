@@ -9,10 +9,17 @@ from typing import Literal
 from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Query
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from plong_elven.api.deps import get_current_user, get_task_service, require_role
-from plong_elven.db.models import User
-from plong_elven.schemas.tasks import BroadcastTaskRequest, FinishOut, TaskOut
+from plong_elven.db.models import TaskFootage, User
+from plong_elven.db.session import get_db
+from plong_elven.schemas.tasks import (
+    BroadcastTaskRequest,
+    FinishOut,
+    TaskFootageOut,
+    TaskOut,
+)
 from plong_elven.services.task_service import TaskService
 
 router = APIRouter(prefix="/api/v1/tasks", tags=["tasks"])
@@ -72,3 +79,22 @@ async def finish_task(
     _user: User = Depends(require_role("ops_manager")),  # noqa: B008
 ) -> FinishOut:
     return await service.finish(taskId)
+
+
+@router.get("/{taskId}/footage")
+async def get_footage(
+    taskId: UUID,
+    session: AsyncSession = Depends(get_db),  # noqa: B008
+    _user: User = Depends(get_current_user),  # noqa: B008
+) -> TaskFootageOut:
+    footage = await session.get(TaskFootage, taskId)
+    if footage is None:
+        from plong_elven.services.errors import AppError
+
+        raise AppError(404, "not_found", f"footage for task {taskId} not found")
+    return TaskFootageOut(
+        taskId=taskId,
+        status=footage.status,
+        url=footage.public_url,
+        error=footage.error,
+    )

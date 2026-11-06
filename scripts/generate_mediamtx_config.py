@@ -41,7 +41,7 @@ def main() -> None:
         # duration on a jittery camera feed, which AVPlayer silently stalls on
         # (no error, just a black view). Classic MPEG-TS HLS has no parts and
         # just works, at the cost of a couple extra seconds of latency.
-        f"hlsVariant: mpegts\npaths:\n  cam1:\n    source: {json.dumps(rtsp_url)}\n",
+        f"hlsVariant: mpegts\nrecord: yes\nrecordFormat: mpegts\nrecordPath: /recordings/%path/%Y-%m-%d_%H-%M-%S-%f.ts\nrecordSegmentDuration: 2s\npaths:\n  cam1:\n    source: {json.dumps(rtsp_url)}\n",
         encoding="utf-8",
     )
     os.chmod(output, 0o600)

@@ -8,6 +8,7 @@ ROUTES = {
     ("GET", "/api/v1/profile"),
     ("PUT", "/api/v1/profile/push-token"),
     ("GET", "/api/v1/tasks"),
+    ("GET", "/api/v1/tasks/{taskId}/footage"),
     ("POST", "/api/v1/tasks/broadcast"),
     ("POST", "/api/v1/tasks/{taskId}/accept"),
     ("POST", "/api/v1/tasks/{taskId}/complete"),
