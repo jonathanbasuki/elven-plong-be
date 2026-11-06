@@ -334,6 +334,16 @@ class TaskService:
             taskId=task.task_id, status="finished", finishedAt=task.finished_at
         )
 
+    async def cancel(self, task_id: UUID) -> TaskOut:
+        """Cancel a task while its staff-gathering window is still open."""
+        task = await self._find_task(task_id)
+        if task.task_status_id != TaskStatusId.OPEN:
+            raise AppError(409, "not_open", "Only open tasks can be cancelled.")
+        task.task_status_id = TaskStatusId.CLOSED
+        await _free_zone_if_latest(self._session, task)
+        await self._session.commit()
+        return await self._task_out(task)
+
     async def get_staff(self, staff_id: UUID) -> StaffOut:
         """Get staff member information."""
         staff = await self._session.get(User, staff_id)

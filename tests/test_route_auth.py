@@ -291,6 +291,7 @@ ROLE_MATRIX = {
     ("POST", "/api/v1/tasks/{taskId}/accept"): {"floor_staff"},
     ("POST", "/api/v1/tasks/{taskId}/complete"): {"floor_staff"},
     ("POST", "/api/v1/tasks/{taskId}/finish"): {"ops_manager"},
+    ("POST", "/api/v1/tasks/{taskId}/cancel"): {"ops_manager"},
     ("GET", "/dev/cameras/{cameraId}/layout"): {"admin"},
     ("PUT", "/dev/cameras/{cameraId}/layout"): {"admin"},
     ("GET", "/dev/cameras/{cameraId}/snapshot"): {"admin"},

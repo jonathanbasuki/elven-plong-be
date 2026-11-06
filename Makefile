@@ -21,7 +21,7 @@ db-revision: ; uv run --env-file .env alembic revision --autogenerate -m "$(mess
 api:         ; uv run --env-file .env uvicorn plong_elven.api.main:app --host 0.0.0.0 --port 8080 --reload
 
 cctv:        ; uv run --env-file .env python -m plong_elven.cctv $(ARGS)
-cctv-relay:  ; uv run --env-file .env python -m plong_elven.cctv rtsp://10.60.33.10:8554/cam1 --camera-id cam1 --frame-interval 0.2 --jpeg-quality 80
+cctv-relay:  ; uv run --env-file .env python -m plong_elven.cctv rtsp://127.0.0.1:8554/cam1 --camera-id default --frame-interval 0.2 --jpeg-quality 80
 benchmark-cctv: ; uv run --env-file .env python scripts/benchmark_cctv.py $(ARGS)
 
 # Downloads YOLO weights into models/ via Ultralytics' own fetch (models/*.pt is gitignored).

@@ -81,6 +81,16 @@ async def finish_task(
     return await service.finish(taskId)
 
 
+@router.post("/{taskId}/cancel")
+async def cancel_task(
+    taskId: UUID,
+    service: TaskService = Depends(get_task_service),  # noqa: B008
+    _user: User = Depends(require_role("ops_manager")),  # noqa: B008
+) -> TaskOut:
+    """Cancel an open task before the staff-gathering window ends."""
+    return await service.cancel(taskId)
+
+
 @router.get("/{taskId}/footage")
 async def get_footage(
     taskId: UUID,
