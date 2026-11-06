@@ -38,6 +38,7 @@ _OPS = {
     operators.gt: op.gt,
     operators.is_: lambda a, b: a is b,
     operators.is_not: lambda a, b: a is not b,
+    operators.in_op: lambda a, b: a in b,
 }
 
 
@@ -359,6 +360,29 @@ def test_limit_bounds(session, client_as) -> None:
     _err(client.get("/api/v1/tasks?status=bogus"), 422, "validation_error")
 
 
+def test_list_filters_on_several_statuses(session, client_as) -> None:
+    client, _ = client_as("floor_staff")
+    o = session.add_task(status=TaskStatusId.OPEN)
+    c = session.add_task(status=TaskStatusId.CLOSED, expires_in=-60)
+    session.add_task(status=TaskStatusId.FINISHED)
+
+    body = client.get("/api/v1/tasks?status=open&status=closed").json()
+
+    assert {t["taskId"] for t in body} == {str(o.task_id), str(c.task_id)}
+
+
+def test_list_repeated_status_is_fine(session, client_as) -> None:
+    client, _ = client_as("floor_staff")
+    session.add_task()
+    assert len(client.get("/api/v1/tasks?status=open&status=open").json()) == 1
+
+
+@pytest.mark.parametrize("query", ["status=open&status=bogus", "status="])
+def test_list_bad_status_is_422(client_as, query) -> None:
+    client, _ = client_as("floor_staff")
+    _err(client.get(f"/api/v1/tasks?{query}"), 422, "validation_error")
+
+
 def test_list_requires_auth() -> None:
     _err(TestClient(app).get("/api/v1/tasks"), 401, "unauthenticated")
 
@@ -474,6 +498,16 @@ def test_broadcast_after_finish_is_allowed(session, client_as) -> None:
     session.add_task(status=TaskStatusId.FINISHED)
 
     assert client.post("/api/v1/tasks/broadcast", json=BODY).status_code == 201
+
+
+def test_task_detail_unknown_is_404(client_as) -> None:
+    client, _ = client_as("floor_staff")
+    _err(client.get(f"/api/v1/tasks/{uuid4()}"), 404, "not_found")
+
+
+def test_task_detail_bad_id_is_422(client_as) -> None:
+    client, _ = client_as("floor_staff")
+    _err(client.get("/api/v1/tasks/not-a-uuid"), 422, "validation_error")
 
 
 # --- POST /api/v1/tasks/{id}/accept -------------------------------------------

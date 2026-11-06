@@ -13,7 +13,7 @@ Task rules:
 import builtins
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 from uuid import UUID
 
 from sqlalchemy import func, select
@@ -21,6 +21,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from plong_elven.db.models import (
+    Role,
     Task,
     TaskRespondent,
     TaskRespondentStatusId,
@@ -29,19 +30,45 @@ from plong_elven.db.models import (
     UserStatusId,
     Zone,
 )
+from plong_elven.helpers.zone_status import classify
 from plong_elven.schemas.tasks import (
     AcceptedStaffOut,
     FinishOut,
+    LiveCrowdOut,
     StaffOut,
+    TaskDetailOut,
     TaskOut,
     TaskStatus,
 )
+from plong_elven.services.crowd_service import CrowdService
 from plong_elven.services.errors import AppError
+from plong_elven.state.live_state import LiveState
 
 if TYPE_CHECKING:
     from plong_elven.services.internal.notification_service import NotificationService
 
 TASK_OPEN_SECONDS = 20
+
+
+def task_phase(task_status_id: int) -> Literal["ongoing", "completed"]:
+    """ "ongoing" only while a task is open; closed and finished are "completed"."""
+    return "ongoing" if task_status_id == TaskStatusId.OPEN else "completed"
+
+
+def crowd_log_end(
+    task: Task, respondents: builtins.list[AcceptedStaffOut], now: datetime
+) -> datetime:
+    """When a completed task's crowd log stops: its finish time; for a closed,
+    unfinished task, now while anyone is still working, else the last
+    completion; for one nobody accepted, the end of its 20-second window. So an
+    old task that was never finished does not return an ever-growing log."""
+    if task.finished_at is not None:
+        return task.finished_at
+    if not respondents:
+        return task.expires_at
+    if any(r.completedAt is None for r in respondents):
+        return now
+    return max(r.completedAt for r in respondents)
 
 
 async def _respondent_count(
@@ -156,7 +183,10 @@ class TaskService:
         )
 
     async def list(
-        self, zone_id: str | None, status: TaskStatus | None, limit: int
+        self,
+        zone_id: str | None,
+        statuses: builtins.list[TaskStatus] | None,
+        limit: int,
     ) -> builtins.list[TaskOut]:
         """List tasks newest first. Empty result is [], never 404.
 
@@ -169,8 +199,10 @@ class TaskService:
         stmt = select(Task)
         if zone_id is not None:
             stmt = stmt.where(Task.zone_id == zone_id)
-        if status is not None:
-            stmt = stmt.where(Task.task_status_id == TaskStatusId[status.upper()])
+        if statuses:
+            stmt = stmt.where(
+                Task.task_status_id.in_({TaskStatusId[s.upper()] for s in statuses})
+            )
         stmt = stmt.order_by(Task.created_at.desc()).limit(limit)
         tasks = (await self._session.scalars(stmt)).all()
         # shortcut: one respondent query per task, fine at limit<=50; join if lists grow
@@ -318,14 +350,71 @@ class TaskService:
             taskId=task.task_id, status="finished", finishedAt=task.finished_at
         )
 
+    async def detail(self, task_id: UUID, live: LiveState) -> TaskDetailOut:
+        """One task with its zone, crowd (live while open, 5-minute log once
+        completed), the zone's own staff and the delegated staff."""
+        task = await self._find_task(task_id)
+        if await self._close_if_expired(task, datetime.now(UTC)):
+            await self._session.commit()
+        zone = await self._session.get(Zone, task.zone_id)
+        out = await self._task_out(task)
+        phase = task_phase(task.task_status_id)
+        live_crowd, log = None, []
+        if phase == "ongoing":
+            live_crowd = LiveCrowdOut(
+                count=live.counts.get(task.zone_id, 0),
+                observedAt=live.observed_at.get(task.zone_id),
+            )
+        else:
+            end = crowd_log_end(task, out.acceptedStaff, datetime.now(UTC))
+            log = await CrowdService(self._session, live).log_between(
+                task.zone_id, task.created_at, end
+            )
+        return TaskDetailOut(
+            taskId=task.task_id,
+            zoneId=task.zone_id,
+            zoneName=zone.name,
+            zoneStatus=classify(live.counts.get(task.zone_id, 0), zone.threshold),
+            instruction=task.instruction,
+            status=out.status,
+            phase=phase,
+            createdAt=task.created_at,
+            expiresAt=task.expires_at,
+            finishedAt=task.finished_at,
+            totalStaff=task.total_staff,
+            acceptedCount=out.acceptedCount,
+            completedCount=out.completedCount,
+            liveCrowd=live_crowd,
+            crowdLog=log,
+            zoneStaff=await self.list_staff(task.zone_id),
+            delegatedStaff=out.acceptedStaff,
+        )
+
     async def get_staff(self, staff_id: UUID) -> StaffOut:
         """Get staff member information."""
         staff = await self._session.get(User, staff_id)
         if staff is None:
             raise AppError(404, "not_found", f"staff {staff_id} not found")
-        return StaffOut(
-            staffId=staff.user_id,
-            name=staff.full_name,
-            status=UserStatusId(staff.user_status_id).name.lower(),
-            zoneId=staff.zone_id,
+        return _staff_out(staff)
+
+    async def list_staff(self, zone_id: str | None) -> builtins.list[StaffOut]:
+        """Active floor staff ordered by name; with zone_id, only that home zone.
+        An unknown zone gives []."""
+        stmt = (
+            select(User)
+            .join(Role, Role.role_id == User.role_id)
+            .where(Role.name == "floor_staff", User.is_active.is_(True))
         )
+        if zone_id is not None:
+            stmt = stmt.where(User.zone_id == zone_id)
+        users = (await self._session.scalars(stmt.order_by(User.full_name))).all()
+        return [_staff_out(u) for u in users]
+
+
+def _staff_out(user: User) -> StaffOut:
+    return StaffOut(
+        staffId=user.user_id,
+        name=user.full_name,
+        status=UserStatusId(user.user_status_id).name.lower(),
+        zoneId=user.zone_id,
+    )

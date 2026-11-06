@@ -7,7 +7,7 @@ Items marked **TBD** could not be checked from this repo.
 
 ## 1. The short version
 
-The app uses **15 routes and 1 WebSocket**. All of them are under `/api/v1`.
+The app uses **17 routes and 1 WebSocket**. All of them are under `/api/v1`.
 
 | Area | What the app does with it | Routes |
 |---|---|---|
@@ -15,8 +15,8 @@ The app uses **15 routes and 1 WebSocket**. All of them are under `/api/v1`.
 | Profile | Show who I am, register the phone for pushes | `GET /profile`, `PUT /profile/push-token` |
 | Zones | Show the list of zones and whether each has a task running | `GET /zones`, `GET /zones/{zoneId}` |
 | Crowd | Show how many people are in a zone now, and the past hour | `GET /zones/{zoneId}/crowd`, `GET /zones/{zoneId}/crowd/history`, `WS /crowd/live` |
-| Tasks | Manager broadcasts a task, staff accept and complete, manager finishes | `GET /tasks`, `POST /tasks/broadcast`, `POST /tasks/{id}/accept`, `/complete`, `/finish` |
-| Staff | Look up one staff member | `GET /staff/{staffId}` |
+| Tasks | Manager broadcasts a task, staff accept and complete, manager finishes; one task's detail | `GET /tasks`, `GET /tasks/{id}`, `POST /tasks/broadcast`, `POST /tasks/{id}/accept`, `/complete`, `/finish` |
+| Staff | List floor staff (optionally one zone), look up one | `GET /staff`, `GET /staff/{staffId}` |
 
 The app does **not** call these. Do not build against them:
 
@@ -331,7 +331,27 @@ curl 'http://localhost:8080/api/v1/tasks?zoneId=z1&status=open' \
 
 Returns a list, newest first. Filters are optional: `zoneId`, `status`
 (`open`, `closed`, `finished`), `limit` (1 to 50, default 20). An empty list
-means nothing is open.
+means nothing is open. To match several statuses, repeat it:
+`?status=open&status=closed`.
+
+### Anyone: one task's detail
+
+```bash
+curl http://localhost:8080/api/v1/tasks/<taskId> -H 'Authorization: Bearer <accessToken>'
+```
+
+Returns the task plus what a detail screen needs: `zoneName`, `zoneStatus`
+(`safe`/`crowded`), `instruction`, `createdAt`, `status`, `phase`, the zone's own
+staff (`zoneStaff`) and the delegated staff (`delegatedStaff`).
+
+| `phase` | When | Crowd fields |
+|---|---|---|
+| `ongoing` | status `open` | `liveCrowd` = `{"count", "observedAt"}`, `crowdLog` = `[]` |
+| `completed` | status `closed` or `finished` | `liveCrowd` = `null`, `crowdLog` = 5-minute buckets, oldest first |
+
+The crowd log covers the 5-minute windows from the broadcast to the task's end
+(broadcast 17:32, finished 18:12 gives 17:30 … 18:10). A short task may have only
+one or two points. Full field list: [API_REFERENCE.md](API_REFERENCE.md).
 
 ### Staff: accept (`floor_staff`)
 
@@ -369,6 +389,20 @@ Works only after every accepted staff member completed (`409 not_all_done`).
 It works on both `open` and `closed` tasks, and frees the zone.
 
 ## 8. Staff lookup
+
+All floor staff, optionally only one home zone:
+
+```bash
+curl 'http://localhost:8080/api/v1/staff?zoneId=z2' -H 'Authorization: Bearer <accessToken>'
+```
+
+```json
+[{"staffId": "a1b2…", "name": "Sam Staff", "status": "idle", "zoneId": "z2"}]
+```
+
+Only active `floor_staff` users, ordered by name. Leave out `zoneId` for everyone.
+
+One staff member:
 
 ```bash
 curl http://localhost:8080/api/v1/staff/<staffId> -H 'Authorization: Bearer <accessToken>'

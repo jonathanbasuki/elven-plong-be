@@ -131,6 +131,46 @@ class CrowdService:
             for row in rows.all()
         ]
 
+    async def log_between(
+        self, zone_id: str, start: datetime, end: datetime
+    ) -> list[HistoryBucketOut]:
+        """5-minute buckets from the one containing `start` to the one containing
+        `end`, oldest first. The zone's current bucket is only written to
+        zone_logs when the next window starts, so if it is in range and not yet
+        saved it is added from memory."""
+        first = _bucket_start(start)
+        rows = await self._session.scalars(
+            select(ZoneLog)
+            .where(
+                ZoneLog.zone_id == zone_id,
+                ZoneLog.bucket_start >= first,
+                ZoneLog.bucket_start <= end,
+            )
+            .order_by(ZoneLog.bucket_start)
+        )
+        log = [
+            HistoryBucketOut(
+                bucketStart=r.bucket_start, avgCount=r.avg_count, peakCount=r.peak_count
+            )
+            for r in rows.all()
+        ]
+        live = self._live.buckets.get(zone_id)
+        if (
+            live is not None
+            and live.n > 0
+            and first <= live.start <= end
+            and all(b.bucketStart != live.start for b in log)
+        ):
+            log.append(
+                HistoryBucketOut(
+                    bucketStart=live.start,
+                    avgCount=round(live.avg, 2),
+                    peakCount=live.peak,
+                )
+            )
+            log.sort(key=lambda b: b.bucketStart)
+        return log
+
     async def _load_zone(self, zone_id: str) -> Zone:
         zone = await self._session.get(Zone, zone_id)
         if zone is None:

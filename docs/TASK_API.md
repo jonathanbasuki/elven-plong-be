@@ -209,10 +209,59 @@ curl -s "http://127.0.0.1:8080/api/v1/tasks?zoneId=z1&status=open" \
 
 A list of task objects, newest first. All parameters are optional: `zoneId`,
 `status` (`open`, `closed` or `finished`), `limit` (default 20, range 1 to 50).
+Repeat `status` to match several at once, for example
+`?status=open&status=closed`; an empty or unknown value is `422`.
 No match is `200 []`. Before the list is built, any `open` task past
 `expiresAt` (within the `zoneId` filter) is set to `closed` and committed, so
 `status=open` never returns an expired task. For the latest task of any
 status, omit `status` and read the first item.
+
+### `GET /api/v1/tasks/{taskId}` (any role)
+
+One task with everything its detail screen needs:
+
+```json
+{
+  "taskId": "6b1f...",
+  "zoneId": "z1",
+  "zoneName": "Zone 1",
+  "zoneStatus": "safe",
+  "instruction": "Guide people to exit B",
+  "status": "finished",
+  "phase": "completed",
+  "createdAt": "2026-11-06T17:32:00Z",
+  "expiresAt": "2026-11-06T17:32:20Z",
+  "finishedAt": "2026-11-06T18:12:00Z",
+  "totalStaff": 2,
+  "acceptedCount": 1,
+  "completedCount": 1,
+  "liveCrowd": null,
+  "crowdLog": [
+    {"bucketStart": "2026-11-06T17:30:00Z", "avgCount": 11.2, "peakCount": 15},
+    {"bucketStart": "2026-11-06T18:10:00Z", "avgCount": 4.0, "peakCount": 6}
+  ],
+  "zoneStaff": [{"staffId": "1a2b...", "name": "Dedi", "status": "idle", "zoneId": "z1"}],
+  "delegatedStaff": [
+    {"staffId": "9c2e...", "name": "Bunga", "status": "completed", "completedAt": "2026-11-06T18:00:00Z"}
+  ]
+}
+```
+
+- `phase` is `ongoing` only while the task is `open`; `closed` and `finished`
+  are `completed`.
+- While ongoing, `liveCrowd` holds the zone's current count (as `/crowd` does)
+  and `crowdLog` is `[]`.
+- Once completed, `liveCrowd` is `null` and `crowdLog` holds the zone's
+  5-minute buckets, oldest first, from the bucket containing `createdAt` to
+  the bucket containing the task's end: broadcast 17:32, finished 18:12 gives
+  the buckets 17:30 … 18:10. The end is `finishedAt`; for a `closed` task that
+  staff are still working on, the current time; for a `closed` task nobody
+  accepted, `expiresAt`. A bucket that is not saved yet is included from
+  memory. A window with no detections has no bucket.
+- `zoneStatus` comes from the zone's current live count and `threshold`.
+- `zoneStaff` is the active floor staff whose home zone is this zone;
+  `delegatedStaff` is the people who accepted (same as `acceptedStaff`).
+- `404 not_found` for an unknown id, `422` if it is not a UUID.
 
 ### `POST /api/v1/tasks/{taskId}/accept` (`floor_staff`)
 
@@ -258,6 +307,20 @@ zone's `isActiveTask` becomes `false`. Finishing an already finished task
 returns the same body with the original `finishedAt`.
 
 ## Staff lookup
+
+### `GET /api/v1/staff?zoneId=` (any role)
+
+```bash
+curl -s "http://127.0.0.1:8080/api/v1/staff?zoneId=z2" -H "Authorization: Bearer $TOKEN"
+```
+
+```json
+[{"staffId": "9c2e...", "name": "Bunga", "status": "idle", "zoneId": "z2"}]
+```
+
+Every active `floor_staff` user, ordered by name. `zoneId` is optional and
+keeps only staff whose home zone is that zone; an unknown zone gives `[]`.
+Managers and admins are never listed.
 
 ### `GET /api/v1/staff/{staffId}` (any role)
 

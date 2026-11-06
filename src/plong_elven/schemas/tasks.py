@@ -8,7 +8,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, StringConstraints
 
-from plong_elven.schemas.zones import UtcDatetime
+from plong_elven.schemas.zones import HistoryBucketOut, UtcDatetime
 
 TaskStatus = Literal["open", "closed", "finished"]
 RespondentStatus = Literal["ongoing", "completed"]
@@ -54,3 +54,32 @@ class StaffOut(BaseModel):
     name: str
     status: Literal["idle", "delegating"]
     zoneId: str | None
+
+
+class LiveCrowdOut(BaseModel):
+    count: int
+    observedAt: UtcDatetime | None
+
+
+class TaskDetailOut(BaseModel):
+    """GET /api/v1/tasks/{taskId}. While `phase` is "ongoing" (status open)
+    `liveCrowd` is set and `crowdLog` is []; once "completed" `liveCrowd` is
+    null and `crowdLog` holds the 5-minute buckets, oldest first."""
+
+    taskId: UUID
+    zoneId: str
+    zoneName: str
+    zoneStatus: Literal["safe", "crowded"]
+    instruction: str
+    status: TaskStatus
+    phase: Literal["ongoing", "completed"]
+    createdAt: UtcDatetime
+    expiresAt: UtcDatetime
+    finishedAt: UtcDatetime | None
+    totalStaff: int
+    acceptedCount: int
+    completedCount: int
+    liveCrowd: LiveCrowdOut | None
+    crowdLog: list[HistoryBucketOut]
+    zoneStaff: list[StaffOut]
+    delegatedStaff: list[AcceptedStaffOut]
