@@ -32,14 +32,14 @@ from fastapi.testclient import TestClient
 from starlette.routing import BaseRoute, WebSocketRoute
 from starlette.websockets import WebSocketDisconnect
 
-from plong_elven.api.deps import (
+from plong_elven.app.api.deps import (
     get_current_user,
     get_push_sender,
     get_session_factory,
 )
-from plong_elven.api.main import app, create_app
-from plong_elven.db.session import get_db
-from plong_elven.services.auth_service import AuthService, create_access_token
+from plong_elven.app.api.main import app, create_app
+from plong_elven.app.db.session import get_db
+from plong_elven.app.services.auth_service import AuthService, create_access_token
 
 # --- allow-lists -------------------------------------------------------------
 
@@ -285,6 +285,8 @@ ROLE_MATRIX = {
     ("GET", "/api/v1/zones/{zoneId}/crowd"): ANY,
     ("GET", "/api/v1/zones/{zoneId}/crowd/history"): ANY,
     ("GET", "/api/v1/tasks"): ANY,
+    ("GET", "/api/v1/tasks/{taskId}"): ANY,
+    ("GET", "/api/v1/staff"): ANY,
     ("GET", "/api/v1/tasks/{taskId}/footage"): ANY,
     ("GET", "/api/v1/staff/{staffId}"): ANY,
     ("POST", "/api/v1/tasks/broadcast"): {"ops_manager"},

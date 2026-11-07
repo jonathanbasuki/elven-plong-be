@@ -11,10 +11,10 @@ from conftest import TEST_INTERNAL_KEY, FakeSessionFactory, fake_db, fake_user
 from fastapi.testclient import TestClient
 from test_tasks import MemorySession
 
-from plong_elven.api.deps import get_current_user, get_db, get_session_factory
-from plong_elven.api.main import app
-from plong_elven.services.auth_service import AuthService, create_access_token
-from plong_elven.state.live_state import LiveState, get_live_state
+from plong_elven.app.api.deps import get_current_user, get_db, get_session_factory
+from plong_elven.app.api.main import app
+from plong_elven.app.services.auth_service import AuthService, create_access_token
+from plong_elven.core.state.live_state import LiveState, get_live_state
 
 JPEG = b"\xff\xd8fake-jpeg-bytes\xff\xd9"
 LAYOUT = {

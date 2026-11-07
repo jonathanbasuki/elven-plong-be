@@ -3,64 +3,21 @@ deletion (FK cascade/restrict). Skips without a DB unless REQUIRE_PG=1 (set in
 CI), so a broken CI database fails instead of silently skipping."""
 
 import asyncio
-import os
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
-import pytest_asyncio
 from conftest import FakePushSender
-from sqlalchemy import delete, func, select, text
-from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from sqlalchemy.pool import NullPool
+from conftest import pg_cleanup as _cleanup
+from conftest import pg_zone as _zone
+from sqlalchemy import delete, func, select
 
-from plong_elven.db.models import Task, TaskRespondent, User, Zone, ZoneLog
-from plong_elven.schemas.layout import LayoutZone
-from plong_elven.services.errors import AppError
-from plong_elven.services.internal.notification_service import NotificationService
-from plong_elven.services.task_service import TaskService
-from plong_elven.services.zone_service import ZoneService
-
-
-@pytest_asyncio.fixture
-async def factory():
-    db_url = os.environ.get("DATABASE_URL", "")
-    if not db_url:
-        if os.environ.get("REQUIRE_PG") == "1":
-            pytest.fail("REQUIRE_PG=1 but DATABASE_URL is not set")
-        pytest.skip("DATABASE_URL not set (no Postgres)")
-
-    engine = create_async_engine(db_url, poolclass=NullPool)
-    try:
-        async with engine.connect() as conn:
-            await conn.execute(text("SELECT 1"))
-    except (OSError, SQLAlchemyError) as e:
-        await engine.dispose()
-        if os.environ.get("REQUIRE_PG") == "1":
-            pytest.fail(f"REQUIRE_PG=1 but no Postgres reachable: {e}")
-        pytest.skip(f"no Postgres reachable: {e}")
-    yield async_sessionmaker(engine, expire_on_commit=False)
-    await engine.dispose()
-
-
-def _zone(zone_id: str) -> Zone:
-    return Zone(
-        zone_id=zone_id, name="Race", polygon=[[0, 0], [1, 0], [1, 1]], threshold=10
-    )
-
-
-async def _cleanup(factory, zone_id: str, user_ids=()) -> None:
-    async with factory() as s:
-        task_ids = select(Task.task_id).where(Task.zone_id == zone_id)
-        await s.execute(
-            delete(TaskRespondent).where(TaskRespondent.task_id.in_(task_ids))
-        )
-        await s.execute(delete(Task).where(Task.zone_id == zone_id))
-        if user_ids:
-            await s.execute(delete(User).where(User.user_id.in_(user_ids)))
-        await s.execute(delete(Zone).where(Zone.zone_id == zone_id))
-        await s.commit()
+from plong_elven.app.db.models import Task, TaskRespondent, User, Zone, ZoneLog
+from plong_elven.app.schemas.layout import LayoutZone
+from plong_elven.app.services.errors import AppError
+from plong_elven.app.services.internal.notification_service import NotificationService
+from plong_elven.app.services.task_service import TaskService
+from plong_elven.app.services.zone_service import ZoneService
 
 
 @pytest.mark.asyncio

@@ -7,7 +7,7 @@ Items marked **TBD** could not be checked from this repo.
 
 ## 1. The short version
 
-The app uses **15 routes and 1 WebSocket**. All of them are under `/api/v1`.
+The app uses **19 routes and 1 WebSocket**. All of them are under `/api/v1`.
 
 | Area | What the app does with it | Routes |
 |---|---|---|
@@ -15,8 +15,8 @@ The app uses **15 routes and 1 WebSocket**. All of them are under `/api/v1`.
 | Profile | Show who I am, register the phone for pushes | `GET /profile`, `PUT /profile/push-token` |
 | Zones | Show the list of zones and whether each has a task running | `GET /zones`, `GET /zones/{zoneId}` |
 | Crowd | Show how many people are in a zone now, and the past hour | `GET /zones/{zoneId}/crowd`, `GET /zones/{zoneId}/crowd/history`, `WS /crowd/live` |
-| Tasks | Manager broadcasts a task, staff accept and complete, manager finishes | `GET /tasks`, `POST /tasks/broadcast`, `POST /tasks/{id}/accept`, `/complete`, `/finish` |
-| Staff | Look up one staff member | `GET /staff/{staffId}` |
+| Tasks | Manager broadcasts or cancels a task, staff accept and complete; one task's detail and video | `GET /tasks`, `GET /tasks/{id}`, `GET /tasks/{id}/footage`, `POST /tasks/broadcast`, `POST /tasks/{id}/accept`, `/complete`, `/cancel`, `/finish` |
+| Staff | List floor staff (optionally one zone), look up one | `GET /staff`, `GET /staff/{staffId}` |
 
 The app does **not** call these. Do not build against them:
 
@@ -59,7 +59,8 @@ Every error has the same shape. Read `error.code`, not the message text.
 | 403 | `not_your_response` | The staff member did not accept this task. |
 | 404 | `not_found` | Unknown zone, task or staff id. |
 | 409 | `broadcast_open` | The zone already has a task running. Show it instead. |
-| 409 | `expired` | Too late to accept. Refresh the list. |
+| 409 | `expired` | Too late to accept, or the task was cancelled. Refresh the list. |
+| 409 | `not_open` | Cancel on a task that already ended. |
 | 409 | `own_zone` | This is the staff member's own home zone; tasks are for staff from other zones. |
 | 409 | `already_delegating` | This staff member is already on another task. |
 | 409 | `slots_full` | Enough staff accepted already. |
@@ -79,7 +80,7 @@ There are three roles. They do not inherit from each other.
 | Broadcast a task | no | **yes** | no |
 | Accept a task | **yes** | no | no |
 | Complete a task | **yes** | no | no |
-| Finish a task | no | **yes** | no |
+| Cancel or finish a task | no | **yes** | no |
 
 The role is in the login response (`user.role`) and in `GET /profile`.
 
@@ -257,38 +258,45 @@ The server sends one message each time the camera program reports counts:
 ## 7. Tasks
 
 A manager starts a task by **broadcasting** it: a request for staff from other
-zones to come and help in a crowded zone. Floor staff accept. When the job is
-done, each one completes. Then the manager finishes it.
+zones to come and help in a crowded zone. Floor staff accept within 20
+seconds. When the job is done, each one completes. When the last one
+completes, the task is complete on its own, and its video is built.
 
 ```
 manager: POST /tasks/broadcast ──> status "open"  (push to floor staff from other zones)
                                   │
    staff: POST /tasks/{id}/accept   (repeat until totalStaff is reached)
                                   │
-                      20 seconds after the broadcast ──> status "closed"
+                      20 seconds after the broadcast:
+                         someone accepted ──> status "ongoing"
+                         nobody accepted  ──> status "closed" (zone freed)
                                   │
    staff: POST /tasks/{id}/complete   (each accepted staff member)
                                   │
-manager: POST /tasks/{id}/finish ──> status "finished"
+                      last one completes ──> status "complete" (zone freed, video starts)
+
+manager, any time while "open" or "ongoing": POST /tasks/{id}/cancel ──> status "closed"
 ```
 
 | Task `status` | Meaning |
 |---|---|
-| `open` | Staff can still accept |
-| `closed` | The 20 seconds ran out. Accepted staff can still complete |
-| `finished` | The manager closed it |
+| `open` | The 20 seconds are running. Staff can accept |
+| `ongoing` | Staff accepted and are working on it |
+| `closed` | Nobody accepted in time, or a manager cancelled it |
+| `complete` | Every helper completed |
+| `finished` | A manager finished it with `/finish` (rare; tasks complete on their own) |
 
 Each accepted staff member also has their own `status` in `acceptedStaff`:
-`ongoing` after accepting, `completed` after completing.
+`ongoing` after accepting, `completed` after completing. Don't mix it up with
+the task's `status`.
 
-A task takes acceptances for **20 seconds** (`expiresAt`). The server changes it
-to `closed` the next time someone reads or changes tasks or zones. There is no
+A task takes acceptances for **20 seconds** (`expiresAt`). The server moves it
+on the next time someone reads or changes tasks or zones. There is no
 background timer, so always read `expiresAt` and `status` from the response.
 
 The zone's `isActiveTask` stays `true` from the broadcast until the task is
-finished. If nobody accepted within the 20 seconds, the zone is freed when the
-task closes. Staff whose **home zone** is the task's zone get no push and
-cannot accept (`409 own_zone`).
+`complete`, cancelled, or closed with nobody accepting. Staff whose **home
+zone** is the task's zone get no push and cannot accept (`409 own_zone`).
 
 ### The task object
 
@@ -296,7 +304,7 @@ cannot accept (`409 own_zone`).
 {
   "taskId": "7d8e1c34-5d0b-4f0e-8e0d-1a7f0f6b2c11",
   "zoneId": "z1",
-  "status": "open",
+  "status": "ongoing",
   "totalStaff": 2,
   "instruction": "Guide people to exit B",
   "expiresAt": "2026-11-03T10:16:10Z",
@@ -322,16 +330,50 @@ Returns `201` with the task object. `totalStaff` must be above 0.
 Errors: `404` unknown zone, `409 broadcast_open` if the zone already has a task
 running.
 
-### Anyone: list and find the open one
+### Anyone: list tasks in progress
 
 ```bash
-curl 'http://localhost:8080/api/v1/tasks?zoneId=z1&status=open' \
+curl 'http://localhost:8080/api/v1/tasks?zoneId=z1&status=open&status=ongoing' \
   -H 'Authorization: Bearer <accessToken>'
 ```
 
 Returns a list, newest first. Filters are optional: `zoneId`, `status`
-(`open`, `closed`, `finished`), `limit` (1 to 50, default 20). An empty list
-means nothing is open.
+(`open`, `ongoing`, `closed`, `complete`, `finished`; repeat it to match
+several), `limit` (1 to 50, default 20). `status=open&status=ongoing` is
+"in progress". An empty list means nothing matches.
+
+### Anyone: one task's detail
+
+```bash
+curl http://localhost:8080/api/v1/tasks/<taskId> -H 'Authorization: Bearer <accessToken>'
+```
+
+Returns the task plus what a detail screen needs: `zoneName`, `zoneStatus`
+(`safe`/`crowded`), `instruction`, `createdAt`, `status`, `phase`, the zone's own
+staff (`zoneStaff`) and the delegated staff (`delegatedStaff`).
+
+| `phase` | When | Crowd fields |
+|---|---|---|
+| `ongoing` | status `open` or `ongoing` | `liveCrowd` = `{"count", "observedAt"}`, `crowdLog` = `[]` |
+| `completed` | status `closed`, `complete` or `finished` | `liveCrowd` = `null`, `crowdLog` = 5-minute buckets, oldest first |
+
+The crowd log covers the 5-minute windows from the broadcast to the task's end
+(broadcast 17:32, completed 18:12 gives 17:30 … 18:10). A short task may have only
+one or two points. Full field list: [API_REFERENCE.md](API_REFERENCE.md).
+
+### Anyone: the task's video
+
+```bash
+curl http://localhost:8080/api/v1/tasks/<taskId>/footage -H 'Authorization: Bearer <accessToken>'
+```
+
+```json
+{"taskId": "7d8e…", "status": "ready", "url": "https://…/tasks/7d8e….mp4", "error": null}
+```
+
+Exists once the task is `complete` (`404` before that). `status` is
+`processing` while the video is built, then `ready` with a playable `url`, or
+`failed` with an `error`. Poll it while `processing`.
 
 ### Staff: accept (`floor_staff`)
 
@@ -351,8 +393,20 @@ curl -X POST http://localhost:8080/api/v1/tasks/<taskId>/complete \
 ```
 
 Returns the updated task, with your entry's `status` `completed` and
-`completedAt` set. Only a staff member who accepted it can complete it
-(`403 not_your_response`).
+`completedAt` set. If you were the last helper still working, the task's
+`status` becomes `complete`. Only a staff member who accepted it can complete
+it (`403 not_your_response`); on a cancelled task it is `409 expired`.
+
+### Manager: cancel (`ops_manager`)
+
+```bash
+curl -X POST http://localhost:8080/api/v1/tasks/<taskId>/cancel \
+  -H 'Authorization: Bearer <accessToken>'
+```
+
+Works while the task is `open` or `ongoing`. The task becomes `closed`, the
+zone is freed, and helpers who had not completed go back to `idle`. Otherwise
+`409 not_open`.
 
 ### Manager: finish (`ops_manager`)
 
@@ -365,10 +419,24 @@ curl -X POST http://localhost:8080/api/v1/tasks/<taskId>/finish \
 {"taskId": "7d8e…", "status": "finished", "finishedAt": "2026-11-03T10:18:00Z"}
 ```
 
+Rarely needed: a task completes on its own when the last helper completes.
 Works only after every accepted staff member completed (`409 not_all_done`).
-It works on both `open` and `closed` tasks, and frees the zone.
 
 ## 8. Staff lookup
+
+All floor staff, optionally only one home zone:
+
+```bash
+curl 'http://localhost:8080/api/v1/staff?zoneId=z2' -H 'Authorization: Bearer <accessToken>'
+```
+
+```json
+[{"staffId": "a1b2…", "name": "Sam Staff", "status": "idle", "zoneId": "z2"}]
+```
+
+Only active `floor_staff` users, ordered by name. Leave out `zoneId` for everyone.
+
+One staff member:
 
 ```bash
 curl http://localhost:8080/api/v1/staff/<staffId> -H 'Authorization: Bearer <accessToken>'

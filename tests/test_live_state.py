@@ -1,5 +1,10 @@
 # tests/test_live_state.py
-from plong_elven.state.live_state import Bucket, LiveState, get_live_state, live_state
+from plong_elven.core.state.live_state import (
+    Bucket,
+    LiveState,
+    get_live_state,
+    live_state,
+)
 
 
 def test_fresh_instances_do_not_share_state() -> None:

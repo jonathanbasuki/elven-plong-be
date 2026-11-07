@@ -10,8 +10,8 @@ import asyncio
 from argon2 import PasswordHasher
 from sqlalchemy import select
 
-from plong_elven.db.models import Role, User, Zone
-from plong_elven.db.session import SessionFactory
+from plong_elven.app.db.models import Role, User, Zone
+from plong_elven.app.db.session import SessionFactory
 
 ZONE = {"id": "z1", "name": "Zone 1", "polygon": [[0, 0], [1, 0], [1, 1], [0, 1]]}
 PASSWORD = "password123"  # same for every seeded user, local dev only

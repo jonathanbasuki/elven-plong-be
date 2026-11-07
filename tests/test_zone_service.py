@@ -3,11 +3,11 @@
 import pytest
 from test_tasks import MemorySession
 
-from plong_elven.db.models import TaskStatusId, Zone
-from plong_elven.schemas.layout import CameraZoneOut, LayoutZone
-from plong_elven.schemas.zones import ZoneOut
-from plong_elven.services.errors import AppError
-from plong_elven.services.zone_service import ZoneService
+from plong_elven.app.db.models import TaskStatusId, Zone
+from plong_elven.app.schemas.layout import CameraZoneOut, LayoutZone
+from plong_elven.app.schemas.zones import ZoneOut
+from plong_elven.app.services.errors import AppError
+from plong_elven.app.services.zone_service import ZoneService
 
 TRI = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]
 

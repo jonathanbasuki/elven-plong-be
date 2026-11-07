@@ -9,9 +9,9 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from plong_elven.adapters import apns_sender
-from plong_elven.adapters.apns_sender import ApnsPushSender
-from plong_elven.services.ports import PushSender
+from plong_elven.app.services.ports import PushSender
+from plong_elven.core.adapters import apns_sender
+from plong_elven.core.adapters.apns_sender import ApnsPushSender
 
 APNS_SETTINGS = SimpleNamespace(
     apns_key_path="k.p8",

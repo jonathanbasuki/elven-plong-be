@@ -68,6 +68,13 @@ report as an error — it just shows a black view indefinitely. MPEG-TS HLS has
 no parts and does not hit this, at the cost of a couple extra seconds of
 latency.
 
+The generated config also turns on **recording**: MediaMTX writes `cam1` as
+2-second MPEG-TS segments into `./recordings` (mounted into the container as
+`/recordings`). The API cuts each completed task's video from these files; see
+"Task footage" in [ARCHITECTURE.md](ARCHITECTURE.md) and the footage settings in
+[CONFIGURATION.md](CONFIGURATION.md). `recordings/` is gitignored. MediaMTX
+deletes recordings older than a day by default.
+
 **Only one RTSP client can read the camera at a time.** If you also run
 `make cctv` (which connects straight to `RTSP_URL`, i.e. the camera) while
 MediaMTX is running, the two will fight over the camera's single RTSP slot —

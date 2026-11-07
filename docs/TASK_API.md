@@ -1,7 +1,7 @@
 # Task API
 
 Covers the crowd-task flow: zones, their live crowd count and status, 5-minute
-history, staff lookup, and the task lifecycle. A manager starts a task by
+history, staff lookup, the task lifecycle and task video footage. A manager starts a task by
 **broadcasting** it to floor staff from other zones, who accept, go to the
 crowded zone, and complete it. Assumes the repository is set up and seeded:
 see the main [README](../README.md) steps 1–7. `scripts/seed_dispatch.py`
@@ -14,8 +14,8 @@ Every endpoint below is under `/api/v1` and needs a bearer access token
 unauthenticated`. Some endpoints need a specific role; any other role gets `403
 wrong_role`. Roles do not inherit, and `admin` has no task powers.
 
-Route source: `src/plong_elven/api/routers/{zones,crowd,tasks,staff}.py`.
-Logic: `src/plong_elven/services/{zone_service,crowd_service,task_service}.py`.
+Route source: `src/plong_elven/app/api/routers/{zones,crowd,tasks,staff}.py`.
+Logic: `src/plong_elven/app/services/{zone_service,crowd_service,task_service}.py`.
 
 Get tokens for the curl examples:
 
@@ -74,9 +74,9 @@ Before the first detection for the zone: `count` is `0`, `status` is `safe`,
 
 `count` is the most recent value posted for the zone, by the camera or by the
 dev page's manual count (`LiveState.counts` in
-`src/plong_elven/state/live_state.py`). It is kept in memory only, so it resets
+`src/plong_elven/core/state/live_state.py`). It is kept in memory only, so it resets
 when the API restarts. `status` is computed on every request from that count
-and the zone's `threshold` (`src/plong_elven/helpers/zone_status.py`):
+and the zone's `threshold` (`src/plong_elven/core/helpers/zone_status.py`):
 
 ```python
 "safe" if count < threshold else "crowded"
@@ -110,7 +110,7 @@ that range is `422 validation_error`. An unknown zone returns `200 []`, not
 The window is written to `zone_logs` once a sample from the *next* window
 arrives. There is no timer, so a closed window with no later sample stays in
 memory until the zone's next sample. See `CrowdService.record_sample` in
-`src/plong_elven/services/crowd_service.py`.
+`src/plong_elven/app/services/crowd_service.py`.
 
 ### `WS /api/v1/crowd/live` (any role, or an admin ticket)
 
@@ -131,36 +131,43 @@ crowded zone. Every staff user may have a home zone (`users.zone_id`); staff
 whose home zone is the task's zone are not notified and cannot accept it.
 
 ```text
-broadcast (ops_manager) ──> open ──┬──> 20 s pass ──> closed
-                                   │
-staff accept (floor_staff) ────────┤   respondent: ongoing
-accepted staff complete ───────────┤   respondent: completed
-                                   └──> manager finishes (open or closed) ──> finished
+broadcast (ops_manager) ──> open ──── 20 s pass ──┬──> ongoing  (someone accepted)
+       │                     │                    └──> closed   (nobody accepted)
+       │              staff accept                         │
+       │              (floor_staff)              each helper completes
+       │                                                   │
+       │                                   last helper completes ──> complete
+       └── manager cancels (open or ongoing) ──> closed
 ```
 
+| Task `status` | Meaning |
+|---|---|
+| `open` | The 20-second window: staff can accept |
+| `ongoing` | The window ended and at least one person accepted; they are working |
+| `closed` | The window ended with nobody accepting, or a manager cancelled it |
+| `complete` | Every helper pressed complete (set automatically) |
+| `finished` | A manager finished it with `/finish` (older tasks; see below) |
+
 - A task takes acceptances until `expiresAt`, 20 seconds after the broadcast.
-  After that it becomes `closed`. There is no timer: the switch to `closed` is
-  written when the task is next read (task list, zone read, broadcast in the
-  same zone, accept or finish).
-- `finish` works on an `open` or `closed` task, as long as at least one staff
-  member accepted and every accepted staff member completed.
+  There is no timer: the switch to `ongoing` or `closed` is written when the
+  task is next read (task list, task detail, zone read, broadcast in the same
+  zone, accept or finish).
+- When the last helper completes, the task becomes `complete` on its own,
+  `finishedAt` is set to that moment, the zone is freed, and its video
+  footage starts building (see `/footage` below).
 
 **The zone's active flag.** A broadcast sets the zone's `isActiveTask` to
-`true`. It goes back to `false` when the task is finished, or when the task
-closes with nobody having accepted it (there is nothing to finish). While it is
+`true`. It goes back to `false` when the task becomes `complete`, is
+finished or cancelled, or closes with nobody having accepted it. While it is
 `true`, another broadcast into that zone gets `409 broadcast_open`.
 
-> Watch out: a task that someone accepted keeps its zone active until every
-> respondent completes and the manager finishes it. If a respondent never
-> completes, the zone cannot be broadcast again. There is no cancel action yet.
-
-The task object returned by list, broadcast, accept and complete:
+The task object returned by list, broadcast, accept, complete and cancel:
 
 ```json
 {
   "taskId": "6b1f...",
   "zoneId": "z1",
-  "status": "open",
+  "status": "ongoing",
   "totalStaff": 2,
   "instruction": "Guide people to exit B",
   "expiresAt": "2026-11-03T19:00:20Z",
@@ -172,9 +179,9 @@ The task object returned by list, broadcast, accept and complete:
 }
 ```
 
-`status` is `open`, `closed` or `finished`. Each `acceptedStaff` entry has its
-own `status`, `ongoing` or `completed`. `acceptedStaff` is ordered by accept
-time.
+`status` is one of the five task statuses above. Each `acceptedStaff` entry
+has its own `status`, `ongoing` or `completed` (a person's part, not the
+task's). `acceptedStaff` is ordered by accept time.
 
 ### `POST /api/v1/tasks/broadcast` (`ops_manager`)
 
@@ -203,16 +210,64 @@ invalid body gets `403`, not `422`.
 ### `GET /api/v1/tasks?zoneId=&status=&limit=` (any role)
 
 ```bash
-curl -s "http://127.0.0.1:8080/api/v1/tasks?zoneId=z1&status=open" \
+curl -s "http://127.0.0.1:8080/api/v1/tasks?zoneId=z1&status=open&status=ongoing" \
   -H "Authorization: Bearer $STAFF_TOKEN"
 ```
 
 A list of task objects, newest first. All parameters are optional: `zoneId`,
-`status` (`open`, `closed` or `finished`), `limit` (default 20, range 1 to 50).
-No match is `200 []`. Before the list is built, any `open` task past
-`expiresAt` (within the `zoneId` filter) is set to `closed` and committed, so
-`status=open` never returns an expired task. For the latest task of any
-status, omit `status` and read the first item.
+`status` (`open`, `ongoing`, `closed`, `complete` or `finished`), `limit`
+(default 20, range 1 to 50). Repeat `status` to match several at once; the
+tasks in progress are `?status=open&status=ongoing`. An empty or unknown value
+is `422`. No match is `200 []`. Before the list is built, any `open` task past
+`expiresAt` (within the `zoneId` filter) is moved to `ongoing` or `closed` and
+committed, so `status=open` never returns an expired task.
+
+### `GET /api/v1/tasks/{taskId}` (any role)
+
+One task with everything its detail screen needs:
+
+```json
+{
+  "taskId": "6b1f...",
+  "zoneId": "z1",
+  "zoneName": "Zone 1",
+  "zoneStatus": "safe",
+  "instruction": "Guide people to exit B",
+  "status": "complete",
+  "phase": "completed",
+  "createdAt": "2026-11-06T17:32:00Z",
+  "expiresAt": "2026-11-06T17:32:20Z",
+  "finishedAt": "2026-11-06T18:12:00Z",
+  "totalStaff": 2,
+  "acceptedCount": 1,
+  "completedCount": 1,
+  "liveCrowd": null,
+  "crowdLog": [
+    {"bucketStart": "2026-11-06T17:30:00Z", "avgCount": 11.2, "peakCount": 15},
+    {"bucketStart": "2026-11-06T18:10:00Z", "avgCount": 4.0, "peakCount": 6}
+  ],
+  "zoneStaff": [{"staffId": "1a2b...", "name": "Dedi", "status": "idle", "zoneId": "z1"}],
+  "delegatedStaff": [
+    {"staffId": "9c2e...", "name": "Bunga", "status": "completed", "completedAt": "2026-11-06T18:12:00Z"}
+  ]
+}
+```
+
+- `phase` is `ongoing` while the task is `open` or `ongoing`; `closed`,
+  `complete` and `finished` are `completed`.
+- While ongoing, `liveCrowd` holds the zone's current count (as `/crowd` does)
+  and `crowdLog` is `[]`.
+- Once completed, `liveCrowd` is `null` and `crowdLog` holds the zone's
+  5-minute buckets, oldest first, from the bucket containing `createdAt` to
+  the bucket containing the task's end: broadcast 17:32, completed 18:12 gives
+  the buckets 17:30 … 18:10. The end is `finishedAt` (set by complete, finish
+  and cancel); for a task that closed with nobody accepting, `expiresAt`. A
+  bucket that is not saved yet is included from memory. A window with no
+  detections has no bucket.
+- `zoneStatus` comes from the zone's current live count and `threshold`.
+- `zoneStaff` is the active floor staff whose home zone is this zone;
+  `delegatedStaff` is the people who accepted (same as `acceptedStaff`).
+- `404 not_found` for an unknown id, `422` if it is not a UUID.
 
 ### `POST /api/v1/tasks/{taskId}/accept` (`floor_staff`)
 
@@ -221,15 +276,15 @@ curl -s -X POST http://127.0.0.1:8080/api/v1/tasks/$TASK_ID/accept \
   -H "Authorization: Bearer $STAFF_TOKEN"
 ```
 
-The calling user accepts the task, their respondent status is `ongoing`, and
+The calling user accepts the task, their part's status is `ongoing`, and
 their user status becomes `delegating`; returns the task object. Checks run in
 this order:
 
 1. `404 not_found` for an unknown id (`taskId` must be a UUID, otherwise `422`).
-2. `409 expired` if the task is not `open` (already `closed` or `finished`), or
-   is still `open` but past `expiresAt` (it is closed in the same call).
-3. A repeat call from a user who already accepted returns `200` with no
-   duplicate row.
+2. A repeat call from a user who already accepted returns `200` with no
+   duplicate row, even after the 20 seconds.
+3. `409 expired` if the task is no longer `open`, or is still `open` but past
+   `expiresAt` (it moves on in the same call).
 4. `409 own_zone` if the user's home zone is the task's zone.
 5. `409 already_delegating` if the user's status is `delegating` (on another
    task).
@@ -240,11 +295,21 @@ the last slot.
 
 ### `POST /api/v1/tasks/{taskId}/complete` (`floor_staff`)
 
-The calling user marks their own part done: respondent status `completed`,
-user status back to `idle`; returns the task object. `404 not_found` for an
-unknown id, `403 not_your_response` if they never accepted this task. A repeat
-call changes nothing: it keeps the first `completedAt` and does not reset a
-user who has since accepted another task.
+The calling user marks their own part done: part status `completed`, user
+status back to `idle`; returns the task object. If they were the last helper
+still working, the task becomes `complete` (see above). `404 not_found` for an
+unknown id, `403 not_your_response` if they never accepted this task, `409
+expired` if the task was cancelled. A repeat call changes nothing: it keeps
+the first `completedAt` and does not reset a user who has since accepted
+another task.
+
+### `POST /api/v1/tasks/{taskId}/cancel` (`ops_manager`)
+
+Cancels a task that is `open` or `ongoing`. The task becomes `closed` with
+`finishedAt` set to now, the zone is freed, and every helper who had not
+completed goes back to `idle` (so they can accept other tasks). Their parts
+stay in `acceptedStaff` as the record. Returns the task object. `409 not_open`
+for a task that is already `closed`, `complete` or `finished`.
 
 ### `POST /api/v1/tasks/{taskId}/finish` (`ops_manager`)
 
@@ -252,12 +317,41 @@ user who has since accepted another task.
 {"taskId": "6b1f...", "status": "finished", "finishedAt": "2026-11-03T19:02:00Z"}
 ```
 
-`404 not_found` for an unknown id. `409 not_all_done` unless at least one staff
-member accepted and every accepted staff member completed. On success the
-zone's `isActiveTask` becomes `false`. Finishing an already finished task
-returns the same body with the original `finishedAt`.
+Normally not needed: a task completes on its own when the last helper
+completes. `409 not_all_done` unless at least one staff member accepted and
+every accepted staff member completed. On an already `complete` or `finished`
+task it changes nothing and returns `"status": "finished"` with the original
+`finishedAt`.
+
+### `GET /api/v1/tasks/{taskId}/footage` (any role)
+
+```json
+{"taskId": "6b1f...", "status": "ready", "url": "https://<project>.supabase.co/storage/v1/object/public/plong-task-footage/tasks/6b1f....mp4", "error": null}
+```
+
+The task's video, cut from the MediaMTX recordings between the broadcast and
+the end, built in the background after the task becomes `complete`. `status`
+is `processing`, `ready` (with `url`) or `failed` (with `error`). `404
+not_found` until the task has completed. A job cut off by a server restart is
+marked `failed` when the API starts again. Setup: the footage settings in
+[CONFIGURATION.md](CONFIGURATION.md) and recording in
+[SETUP_HLS.md](SETUP_HLS.md).
 
 ## Staff lookup
+
+### `GET /api/v1/staff?zoneId=` (any role)
+
+```bash
+curl -s "http://127.0.0.1:8080/api/v1/staff?zoneId=z2" -H "Authorization: Bearer $TOKEN"
+```
+
+```json
+[{"staffId": "9c2e...", "name": "Bunga", "status": "idle", "zoneId": "z2"}]
+```
+
+Every active `floor_staff` user, ordered by name. `zoneId` is optional and
+keeps only staff whose home zone is that zone; an unknown zone gives `[]`.
+Managers and admins are never listed.
 
 ### `GET /api/v1/staff/{staffId}` (any role)
 

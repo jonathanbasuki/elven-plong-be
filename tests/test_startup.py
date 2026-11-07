@@ -5,8 +5,12 @@ import pytest
 from conftest import TEST_INTERNAL_KEY
 from fastapi.testclient import TestClient
 
-from plong_elven.api.main import create_app
-from plong_elven.common.settings import Settings, check_security_settings, get_settings
+from plong_elven.app.api.main import create_app
+from plong_elven.core.common.settings import (
+    Settings,
+    check_security_settings,
+    get_settings,
+)
 
 GOOD = "k" * 32
 

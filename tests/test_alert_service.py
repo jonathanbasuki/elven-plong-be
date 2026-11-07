@@ -4,15 +4,15 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from conftest import FakeSessionFactory
 
-from plong_elven.db.models import Zone
-from plong_elven.services.internal.alert_service import (
+from plong_elven.app.db.models import Zone
+from plong_elven.app.services.internal.alert_service import (
     AlertService,
     StatusChangeRule,
     default_alert_rules,
 )
-from plong_elven.services.internal.notification_service import NotificationService
-from plong_elven.services.ports import Alert
-from plong_elven.state.live_state import LiveState
+from plong_elven.app.services.internal.notification_service import NotificationService
+from plong_elven.app.services.ports import Alert
+from plong_elven.core.state.live_state import LiveState
 
 T0 = datetime(2026, 11, 3, 12, 0, tzinfo=UTC)
 ZONE = Zone(zone_id="z1", name="Main Lobby", polygon=[], threshold=10)

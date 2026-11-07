@@ -1,5 +1,5 @@
 # tests/test_route_table.py
-from plong_elven.api.main import app
+from plong_elven.app.api.main import app
 
 ROUTES = {
     ("POST", "/api/v1/auth/login"),
@@ -10,9 +10,11 @@ ROUTES = {
     ("GET", "/api/v1/tasks"),
     ("GET", "/api/v1/tasks/{taskId}/footage"),
     ("POST", "/api/v1/tasks/broadcast"),
+    ("GET", "/api/v1/tasks/{taskId}"),
     ("POST", "/api/v1/tasks/{taskId}/accept"),
     ("POST", "/api/v1/tasks/{taskId}/complete"),
     ("POST", "/api/v1/tasks/{taskId}/finish"),
+    ("GET", "/api/v1/staff"),
     ("POST", "/api/v1/tasks/{taskId}/cancel"),
     ("GET", "/api/v1/staff/{staffId}"),
     ("POST", "/dev/tickets"),

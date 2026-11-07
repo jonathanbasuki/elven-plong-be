@@ -5,13 +5,15 @@
 > `/api/v1/tasks`, create is `POST /api/v1/tasks/broadcast`, `broadcastId` →
 > `taskId`, `staffNeeded` → `totalStaff`, new required `instruction`), zones
 > have one `threshold` (status is `safe`/`crowded`, no `warning`), and the zone
-> object is `zoneId`, `name`, `threshold`, `isActiveTask`. For the current
+> object is `zoneId`, `name`, `threshold`, `isActiveTask`. Tasks also gained the
+> statuses `ongoing` and `complete`, `POST /tasks/{taskId}/cancel` and
+> `GET /tasks/{taskId}/footage`. For the current
 > contract read [FRONTEND_GUIDE.md](FRONTEND_GUIDE.md) and
 > [API_REFERENCE.md](API_REFERENCE.md).
 
 This guide lists every change the iOS app must make for the new API contract.
 It is written from the backend code and tests in this repository
-(`src/plong_elven/api/routers/`, `src/plong_elven/schemas/`, `tests/`), not
+(`src/plong_elven/app/api/routers/`, `src/plong_elven/app/schemas/`, `tests/`), not
 from what the app reads today. Items the backend cannot confirm are marked
 **[TBD-n]** and collected under [Open items](#open-items).
 
@@ -183,7 +185,7 @@ Before, auth, stream and zone errors and all 422s used FastAPI's
 | 503 | `auth_not_configured` | `JWT_SECRET` shorter than 32 characters (only reachable with `APP_ENV=dev`) |
 | other | `http_error` | any other framework status, for example `405` |
 
-Source: `src/plong_elven/api/main.py` (`_STATUS_TO_CODE` and the three handlers),
+Source: `src/plong_elven/app/api/main.py` (`_STATUS_TO_CODE` and the three handlers),
 `tests/test_error_shape.py`.
 
 ## 5. Roles
@@ -237,7 +239,7 @@ server cannot mint one, so the browser stream is unavailable there:
    `GET /dev/cameras/{cameraId}/stream?ticket=...` or
    `WS /api/v1/crowd/live?ticket=...`.
 
-Rules (from `src/plong_elven/services/auth_service.py` and `tests/test_tickets.py`):
+Rules (from `src/plong_elven/app/services/auth_service.py` and `tests/test_tickets.py`):
 
 - A ticket lives **60 seconds**.
 - When the ticket is used, its user is loaded again and must still be active
@@ -283,7 +285,7 @@ Only relevant if you run the worker yourself.
 - `APP_ENV` is read now and defaults to `prod`.
 - Outside `APP_ENV=dev`, the API **refuses to start** unless
   `INTERNAL_API_KEY` and `JWT_SECRET` are each at least 32 characters
-  (`check_security_settings` in `src/plong_elven/common/settings.py`).
+  (`check_security_settings` in `src/plong_elven/core/common/settings.py`).
 - In dev the startup check is skipped, but a blank `INTERNAL_API_KEY` still
   rejects every worker call with `401`.
 - Run `alembic upgrade head` before starting the new build, so the `admin`

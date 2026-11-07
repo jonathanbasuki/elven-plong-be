@@ -18,9 +18,21 @@ from typing import Any
 from uuid import uuid4
 
 import pytest
+import pytest_asyncio
+from sqlalchemy import delete, select, text
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
 
-from plong_elven.common.settings import get_settings
-from plong_elven.db.models import Role, User, UserStatusId, Zone
+from plong_elven.app.db.models import (
+    Role,
+    Task,
+    TaskRespondent,
+    User,
+    UserStatusId,
+    Zone,
+)
+from plong_elven.core.common.settings import get_settings
 
 
 class FakeSessionFactory:
@@ -168,3 +180,48 @@ def clear_settings_cache():
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
+
+
+# --- real Postgres (DATABASE_URL); skips without one unless REQUIRE_PG=1 ---
+
+
+@pytest_asyncio.fixture
+async def factory():
+    db_url = os.environ.get("DATABASE_URL", "")
+    if not db_url:
+        if os.environ.get("REQUIRE_PG") == "1":
+            pytest.fail("REQUIRE_PG=1 but DATABASE_URL is not set")
+        pytest.skip("DATABASE_URL not set (no Postgres)")
+
+    engine = create_async_engine(db_url, poolclass=NullPool)
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
+    except (OSError, SQLAlchemyError) as e:
+        await engine.dispose()
+        if os.environ.get("REQUIRE_PG") == "1":
+            pytest.fail(f"REQUIRE_PG=1 but no Postgres reachable: {e}")
+        pytest.skip(f"no Postgres reachable: {e}")
+    yield async_sessionmaker(engine, expire_on_commit=False)
+    await engine.dispose()
+
+
+def pg_zone(zone_id: str) -> Zone:
+    return Zone(
+        zone_id=zone_id, name="Race", polygon=[[0, 0], [1, 0], [1, 1]], threshold=10
+    )
+
+
+async def pg_cleanup(factory, zone_id: str, user_ids=()) -> None:
+    """Delete a test zone with its tasks and respondents (its zone_logs go by
+    ON DELETE CASCADE), plus the given users."""
+    async with factory() as s:
+        task_ids = select(Task.task_id).where(Task.zone_id == zone_id)
+        await s.execute(
+            delete(TaskRespondent).where(TaskRespondent.task_id.in_(task_ids))
+        )
+        await s.execute(delete(Task).where(Task.zone_id == zone_id))
+        if user_ids:
+            await s.execute(delete(User).where(User.user_id.in_(user_ids)))
+        await s.execute(delete(Zone).where(Zone.zone_id == zone_id))
+        await s.commit()

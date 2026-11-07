@@ -6,8 +6,8 @@ from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from alembic import context
-from plong_elven.db import models  # noqa: F401
-from plong_elven.db.base import Base
+from plong_elven.app.db import models  # noqa: F401
+from plong_elven.app.db.base import Base
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

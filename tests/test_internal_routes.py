@@ -4,10 +4,10 @@ import pytest
 from conftest import FakeSessionFactory, fake_user
 from fastapi.testclient import TestClient
 
-from plong_elven.api.deps import get_push_sender, get_session_factory
-from plong_elven.api.main import app
-from plong_elven.services.auth_service import create_access_token
-from plong_elven.state.live_state import LiveState, get_live_state
+from plong_elven.app.api.deps import get_push_sender, get_session_factory
+from plong_elven.app.api.main import app
+from plong_elven.app.services.auth_service import create_access_token
+from plong_elven.core.state.live_state import LiveState, get_live_state
 
 FIVE_MB = 5 * 1024 * 1024
 
@@ -106,7 +106,7 @@ def test_blank_internal_key_rejects_every_camera_call(
     live, monkeypatch, path, kwargs
 ) -> None:
     """P2: a blank INTERNAL_API_KEY rejects the call even with an empty header."""
-    from plong_elven.common.settings import get_settings
+    from plong_elven.core.common.settings import get_settings
 
     monkeypatch.setenv("INTERNAL_API_KEY", "")
     get_settings.cache_clear()
@@ -221,7 +221,7 @@ def test_old_camera_routes_are_gone(live, internal_headers) -> None:
 def test_camera_reads_its_zones_from_the_db(live, internal_headers) -> None:
     from test_tasks import MemorySession
 
-    from plong_elven.db.session import get_db
+    from plong_elven.app.db.session import get_db
 
     app.dependency_overrides[get_db] = lambda: MemorySession()
 

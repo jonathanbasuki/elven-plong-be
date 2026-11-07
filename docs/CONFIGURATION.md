@@ -4,7 +4,7 @@ Start from `.env.example` (`make bootstrap` copies it to `.env`).
 
 ## How settings are loaded
 
-- The API reads `Settings` in `src/plong_elven/common/settings.py` (pydantic-settings).
+- The API reads `Settings` in `src/plong_elven/core/common/settings.py` (pydantic-settings).
   It reads real environment variables first, then `.env` in the current directory.
   Values are cached (`get_settings()` is `lru_cache`).
 - The camera process reads only `os.environ`, so run it with `uv run --env-file .env`
@@ -40,13 +40,28 @@ Independently of `APP_ENV`:
 
 APNs setup: see [PUSH_NOTIFICATIONS.md](PUSH_NOTIFICATIONS.md).
 
+### Task footage
+
+Read by `app/services/footage_service.py` when a task completes. Without
+`SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` the upload fails and the
+footage is marked `failed`; tasks themselves are unaffected.
+
+| Variable | Default | Notes |
+|---|---|---|
+| `SUPABASE_URL` | `""` | your project URL, e.g. `https://<project>.supabase.co` |
+| `SUPABASE_SERVICE_ROLE_KEY` | `""` | sent as the bearer token and `apikey` on upload; keep it secret |
+| `SUPABASE_FOOTAGE_BUCKET` | `plong-task-footage` | Storage bucket; must be public for the returned `url` to play |
+| `MEDIAMTX_RECORDINGS_DIR` | `./recordings` | where MediaMTX writes recordings (`make mediamtx` mounts `./recordings`); must be on the API's machine |
+| `MEDIAMTX_RECORD_PATH` | `cam1` | MediaMTX path name, a subfolder of the recordings dir |
+| `MEDIAMTX_RECORD_SEGMENT_SECONDS` | `2` | segment length set in `infra/mediamtx.yml`; used as slack when picking segments |
+
 ## Infra and script variables
 
 | Variable | Read by | Default | Notes |
 |---|---|---|---|
 | `POSTGRES_PASSWORD` | `infra/docker-compose.yml` | none | required (`${POSTGRES_PASSWORD:?...}`); DB and user are `plong_elven`, port `127.0.0.1:5432` |
 | `RTSP_URL` | camera (default source), `scripts/generate_mediamtx_config.py` | camera: `0` | the script requires an `rtsp://` URL with host and port and writes `infra/mediamtx.yml` (mode 600) |
-| `REQUIRE_PG` | `tests/test_task_race_pg.py` | unset | `1` makes the Postgres tests fail instead of skip when no DB is reachable (set in CI) |
+| `REQUIRE_PG` | the Postgres tests (`tests/*_pg.py`, fixture in `tests/conftest.py`) | unset | `1` makes the Postgres tests fail instead of skip when no DB is reachable (set in CI) |
 
 ## Camera process
 
