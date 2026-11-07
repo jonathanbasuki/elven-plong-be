@@ -6,11 +6,11 @@ import pytest
 from conftest import fake_db, fake_user
 from fastapi.testclient import TestClient
 
-from plong_elven.api.deps import get_current_user
-from plong_elven.api.main import app
-from plong_elven.db.session import get_db
-from plong_elven.services.errors import AppError
-from plong_elven.services.task_service import TaskService
+from plong_elven.app.api.deps import get_current_user
+from plong_elven.app.api.main import app
+from plong_elven.app.db.session import get_db
+from plong_elven.app.services.errors import AppError
+from plong_elven.app.services.task_service import TaskService
 
 
 class _CapturingSession:
@@ -52,7 +52,7 @@ def test_task_service_does_not_import_fastapi() -> None:
     """Services stay framework-free: the module source never imports fastapi."""
     from pathlib import Path
 
-    import plong_elven.services.task_service as module
+    import plong_elven.app.services.task_service as module
 
     source = Path(module.__file__).read_text(encoding="utf-8")
     assert "fastapi" not in source
@@ -63,7 +63,7 @@ async def test_list_returns_dtos_newest_first() -> None:
     """TaskService.list returns TaskOut DTOs, not dicts."""
     from test_tasks import MemorySession
 
-    from plong_elven.schemas.tasks import TaskOut
+    from plong_elven.app.schemas.tasks import TaskOut
 
     session = MemorySession()
     t = session.add_task()
@@ -73,8 +73,8 @@ async def test_list_returns_dtos_newest_first() -> None:
 
 
 def test_task_phase_is_ongoing_while_open_or_ongoing() -> None:
-    from plong_elven.db.models import TaskStatusId
-    from plong_elven.services.task_service import task_phase
+    from plong_elven.app.db.models import TaskStatusId
+    from plong_elven.app.services.task_service import task_phase
 
     assert task_phase(TaskStatusId.OPEN) == "ongoing"
     assert task_phase(TaskStatusId.CLOSED) == "completed"
@@ -86,8 +86,8 @@ def test_task_phase_is_ongoing_while_open_or_ongoing() -> None:
 def test_crowd_log_end_rules() -> None:
     from datetime import UTC, datetime, timedelta
 
-    from plong_elven.db.models import Task
-    from plong_elven.services.task_service import crowd_log_end
+    from plong_elven.app.db.models import Task
+    from plong_elven.app.services.task_service import crowd_log_end
 
     t0 = datetime(2026, 11, 6, 17, 32, tzinfo=UTC)
     now = datetime(2026, 11, 9, 9, 0, tzinfo=UTC)
@@ -98,7 +98,7 @@ def test_crowd_log_end_rules() -> None:
     )
     from uuid import uuid4
 
-    from plong_elven.schemas.tasks import AcceptedStaffOut
+    from plong_elven.app.schemas.tasks import AcceptedStaffOut
 
     def person(completed_at):
         status = "ongoing" if completed_at is None else "completed"
@@ -123,8 +123,8 @@ async def test_last_completion_queues_the_footage_job() -> None:
     loose asyncio task that can be garbage-collected or lost."""
     from test_tasks import MemorySession
 
-    from plong_elven.db.models import TaskStatusId, UserStatusId
-    from plong_elven.services.footage_service import process_task_footage
+    from plong_elven.app.db.models import TaskStatusId, UserStatusId
+    from plong_elven.app.services.footage_service import process_task_footage
 
     session = MemorySession()
     t = session.add_task()

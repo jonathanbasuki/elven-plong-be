@@ -6,8 +6,8 @@ from uuid import uuid4
 import pytest
 from conftest import pg_cleanup, pg_zone
 
-from plong_elven.db.models import User
-from plong_elven.services.task_service import TaskService
+from plong_elven.app.db.models import User
+from plong_elven.app.services.task_service import TaskService
 
 
 @pytest.mark.asyncio

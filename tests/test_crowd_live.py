@@ -7,9 +7,9 @@ from conftest import FakeSessionFactory, fake_user
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
-from plong_elven.api.deps import get_session_factory
-from plong_elven.api.main import app
-from plong_elven.services.auth_service import AuthService, create_access_token
+from plong_elven.app.api.deps import get_session_factory
+from plong_elven.app.api.main import app
+from plong_elven.app.services.auth_service import AuthService, create_access_token
 
 
 class _UserSession:
@@ -127,7 +127,7 @@ async def test_a_stalled_client_does_not_hold_up_the_others(monkeypatch) -> None
     """One phone on a bad connection must not stall the camera's count post."""
     import asyncio
 
-    from plong_elven.api.routers import crowd
+    from plong_elven.app.api.routers import crowd
 
     class Stuck:
         async def send_json(self, _msg) -> None:

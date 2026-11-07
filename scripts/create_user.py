@@ -5,8 +5,8 @@ import getpass
 from argon2 import PasswordHasher
 from sqlalchemy import select
 
-from plong_elven.db.models import Role, User
-from plong_elven.db.session import SessionFactory
+from plong_elven.app.db.models import Role, User
+from plong_elven.app.db.session import SessionFactory
 
 
 async def create_user(email: str, full_name: str, role_name: str) -> None:

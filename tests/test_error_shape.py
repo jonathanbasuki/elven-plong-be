@@ -4,9 +4,9 @@
 from conftest import fake_db, fake_user
 from fastapi.testclient import TestClient
 
-from plong_elven.api.deps import get_current_user
-from plong_elven.api.main import app
-from plong_elven.db.session import get_db
+from plong_elven.app.api.deps import get_current_user
+from plong_elven.app.api.main import app
+from plong_elven.app.db.session import get_db
 
 PROFILE = "/api/v1/profile"
 BROADCAST_TASK = "/api/v1/tasks/broadcast"

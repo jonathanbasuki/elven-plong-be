@@ -24,8 +24,15 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from plong_elven.common.settings import get_settings
-from plong_elven.db.models import Role, Task, TaskRespondent, User, UserStatusId, Zone
+from plong_elven.app.db.models import (
+    Role,
+    Task,
+    TaskRespondent,
+    User,
+    UserStatusId,
+    Zone,
+)
+from plong_elven.core.common.settings import get_settings
 
 
 class FakeSessionFactory:

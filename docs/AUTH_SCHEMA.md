@@ -1,7 +1,7 @@
 # Authentication Schema
 
 This document describes the authentication tables as the Alembic migrations
-and `src/plong_elven/db/models.py` create them today.
+and `src/plong_elven/app/db/models.py` create them today.
 
 ## Scope
 
@@ -120,7 +120,7 @@ the prompted password with Argon2id), or for local testing with
 - `name` is one of `floor_staff`, `ops_manager` or `admin`.
 - Role names are stable identifiers, not display labels.
 - Roles do not inherit. Routes check the exact role name
-  (`require_role` in `api/deps.py`); a mismatch returns `403 wrong_role`.
+  (`require_role` in `app/api/deps.py`); a mismatch returns `403 wrong_role`.
 
 ### `users`
 

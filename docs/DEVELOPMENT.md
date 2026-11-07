@@ -27,7 +27,7 @@ make api            # http://127.0.0.1:8080, also bound to 0.0.0.0
 | `db-up` / `db-down` | `docker compose --env-file .env -f infra/docker-compose.yml up -d db` / `down` |
 | `db-migrate` | `uv run --env-file .env alembic upgrade head` |
 | `db-revision message="..."` | `alembic revision --autogenerate -m "$(message)"` |
-| `api` | `uvicorn plong_elven.api.main:app --host 0.0.0.0 --port 8080 --reload` |
+| `api` | `uvicorn plong_elven.app.api.main:app --host 0.0.0.0 --port 8080 --reload` |
 | `cctv ARGS="..."` | `python -m plong_elven.cctv $(ARGS)` |
 | `cctv-relay` | camera process on `rtsp://127.0.0.1:8554/cam1`, `--camera-id default`, frame interval 0.2, JPEG 80 |
 | `benchmark-cctv ARGS="..."` | `scripts/benchmark_cctv.py` |
@@ -115,11 +115,11 @@ Steps: `uv python install 3.12`, `uv sync --locked --group api --group dev`,
 
 - Routers handle HTTP only; rules live in services, which raise `AppError` and do not
   import `fastapi` (checked for `task_service.py` by a test). The same holds for
-  `state/`, `adapters/`, `helpers/` and `common/`.
-- New dependencies are wired in `api/deps.py` so tests can override them.
+  `core/state/`, `core/adapters/`, `core/helpers/` and `core/common/`.
+- New dependencies are wired in `app/api/deps.py` so tests can override them.
 - A service that has its own route is named after it (`zones.py` -> `zone_service.py`).
-  A service with no route goes in `services/internal/`. Code that talks to an outside
-  system goes in `adapters/`. Plain functions go in `helpers/`.
+  A service with no route goes in `app/services/internal/`. Code that talks to an outside
+  system goes in `core/adapters/`. Plain functions go in `core/helpers/`.
 - New alert type: write a class that implements `AlertRule.evaluate()` and add it to
   `default_alert_rules()`; do not change `AlertService`.
 - New push transport: implement `PushSender.send()` (log failures, never raise) and

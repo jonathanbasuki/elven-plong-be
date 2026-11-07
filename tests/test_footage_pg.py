@@ -10,8 +10,8 @@ from uuid import uuid4
 import pytest
 from conftest import pg_cleanup, pg_zone
 
-from plong_elven.db.models import Task, TaskFootage, TaskStatusId
-from plong_elven.services.footage_service import process_task_footage
+from plong_elven.app.db.models import Task, TaskFootage, TaskStatusId
+from plong_elven.app.services.footage_service import process_task_footage
 
 
 def at(hh: int, mm: int) -> datetime:
@@ -120,7 +120,7 @@ async def test_footage_without_segments_fails_and_cleans_up(
 
 @pytest.mark.asyncio
 async def test_startup_fails_footage_cut_off_by_a_restart(factory) -> None:
-    from plong_elven.services.footage_service import fail_interrupted_footage
+    from plong_elven.app.services.footage_service import fail_interrupted_footage
 
     zone_id = f"ft-{uuid4().hex[:8]}"
     task_id = await _tasks(factory, zone_id)  # footage row is "processing"

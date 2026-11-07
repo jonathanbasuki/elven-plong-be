@@ -14,8 +14,8 @@ Every endpoint below is under `/api/v1` and needs a bearer access token
 unauthenticated`. Some endpoints need a specific role; any other role gets `403
 wrong_role`. Roles do not inherit, and `admin` has no task powers.
 
-Route source: `src/plong_elven/api/routers/{zones,crowd,tasks,staff}.py`.
-Logic: `src/plong_elven/services/{zone_service,crowd_service,task_service}.py`.
+Route source: `src/plong_elven/app/api/routers/{zones,crowd,tasks,staff}.py`.
+Logic: `src/plong_elven/app/services/{zone_service,crowd_service,task_service}.py`.
 
 Get tokens for the curl examples:
 
@@ -74,9 +74,9 @@ Before the first detection for the zone: `count` is `0`, `status` is `safe`,
 
 `count` is the most recent value posted for the zone, by the camera or by the
 dev page's manual count (`LiveState.counts` in
-`src/plong_elven/state/live_state.py`). It is kept in memory only, so it resets
+`src/plong_elven/core/state/live_state.py`). It is kept in memory only, so it resets
 when the API restarts. `status` is computed on every request from that count
-and the zone's `threshold` (`src/plong_elven/helpers/zone_status.py`):
+and the zone's `threshold` (`src/plong_elven/core/helpers/zone_status.py`):
 
 ```python
 "safe" if count < threshold else "crowded"
@@ -110,7 +110,7 @@ that range is `422 validation_error`. An unknown zone returns `200 []`, not
 The window is written to `zone_logs` once a sample from the *next* window
 arrives. There is no timer, so a closed window with no later sample stays in
 memory until the zone's next sample. See `CrowdService.record_sample` in
-`src/plong_elven/services/crowd_service.py`.
+`src/plong_elven/app/services/crowd_service.py`.
 
 ### `WS /api/v1/crowd/live` (any role, or an admin ticket)
 

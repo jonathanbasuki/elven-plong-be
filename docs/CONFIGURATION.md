@@ -4,7 +4,7 @@ Start from `.env.example` (`make bootstrap` copies it to `.env`).
 
 ## How settings are loaded
 
-- The API reads `Settings` in `src/plong_elven/common/settings.py` (pydantic-settings).
+- The API reads `Settings` in `src/plong_elven/core/common/settings.py` (pydantic-settings).
   It reads real environment variables first, then `.env` in the current directory.
   Values are cached (`get_settings()` is `lru_cache`).
 - The camera process reads only `os.environ`, so run it with `uv run --env-file .env`
@@ -42,7 +42,7 @@ APNs setup: see [PUSH_NOTIFICATIONS.md](PUSH_NOTIFICATIONS.md).
 
 ### Task footage
 
-Read by `services/footage_service.py` when a task completes. Without
+Read by `app/services/footage_service.py` when a task completes. Without
 `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` the upload fails and the
 footage is marked `failed`; tasks themselves are unaffected.
 

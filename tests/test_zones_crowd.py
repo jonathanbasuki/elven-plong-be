@@ -6,12 +6,12 @@ import pytest
 from conftest import FakeSession, FakeSessionFactory, fake_db, fake_user
 from fastapi.testclient import TestClient
 
-from plong_elven.api.deps import get_current_user, get_session_factory
-from plong_elven.api.main import app
-from plong_elven.db.models import Zone, ZoneLog
-from plong_elven.db.session import get_db
-from plong_elven.schemas.zones import CrowdOut, HistoryBucketOut
-from plong_elven.state.live_state import LiveState, get_live_state
+from plong_elven.app.api.deps import get_current_user, get_session_factory
+from plong_elven.app.api.main import app
+from plong_elven.app.db.models import Zone, ZoneLog
+from plong_elven.app.db.session import get_db
+from plong_elven.app.schemas.zones import CrowdOut, HistoryBucketOut
+from plong_elven.core.state.live_state import LiveState, get_live_state
 
 
 async def fake_current_user():

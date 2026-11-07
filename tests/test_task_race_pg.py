@@ -12,12 +12,12 @@ from conftest import pg_cleanup as _cleanup
 from conftest import pg_zone as _zone
 from sqlalchemy import delete, func, select
 
-from plong_elven.db.models import Task, TaskRespondent, User, Zone, ZoneLog
-from plong_elven.schemas.layout import LayoutZone
-from plong_elven.services.errors import AppError
-from plong_elven.services.internal.notification_service import NotificationService
-from plong_elven.services.task_service import TaskService
-from plong_elven.services.zone_service import ZoneService
+from plong_elven.app.db.models import Task, TaskRespondent, User, Zone, ZoneLog
+from plong_elven.app.schemas.layout import LayoutZone
+from plong_elven.app.services.errors import AppError
+from plong_elven.app.services.internal.notification_service import NotificationService
+from plong_elven.app.services.task_service import TaskService
+from plong_elven.app.services.zone_service import ZoneService
 
 
 @pytest.mark.asyncio

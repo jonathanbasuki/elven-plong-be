@@ -26,16 +26,18 @@ elven-plong-be/
 ├── scripts/                 # Manual utilities: doctor, create_user, seed_dispatch, benchmark_cctv, mediamtx config gen
 ├── secrets/                 # APNs .p8 auth key; gitignored
 ├── src/plong_elven/         # Main Python application source code
-│   ├── api/                 # FastAPI app and one router per domain (api/routers/)
-│   ├── db/                  # SQLAlchemy models and session
-│   ├── schemas/             # Pydantic request/response DTOs (camelCase)
-│   ├── services/            # Business logic: auth, tasks, crowd, zones, cameras
-│   │   └── internal/        # Services with no route of their own: alerts, notifications
-│   ├── adapters/            # Talks to outside systems: APNs
-│   ├── helpers/             # Plain functions: zone-status classification
-│   ├── state/               # In-memory live counts and frames
-│   ├── cctv/                # The camera process: video -> YOLO -> zone counts
-│   ├── common/              # Settings
+│   ├── app/                 # The features: changed often
+│   │   ├── api/             # FastAPI app and one router per domain (api/routers/)
+│   │   ├── schemas/         # Pydantic request/response DTOs (camelCase)
+│   │   ├── services/        # Business logic: auth, tasks, footage, crowd, zones, cameras
+│   │   │   └── internal/    # Services with no route of their own: alerts, notifications
+│   │   └── db/              # SQLAlchemy models and session (+ a migration when they change)
+│   ├── core/                # The plumbing: changed rarely
+│   │   ├── common/          # Settings
+│   │   ├── state/           # In-memory live counts and frames
+│   │   ├── helpers/         # Plain functions: zone-status classification
+│   │   └── adapters/        # Talks to outside systems: APNs
+│   ├── cctv/                # The camera process, run separately: video -> YOLO -> zone counts
 │   └── __init__.py          # Package entry point
 ├── tests/                   # Automated tests
 ├── alembic.ini              # Alembic configuration

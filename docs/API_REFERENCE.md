@@ -1,6 +1,6 @@
 # API reference (as built)
 
-Derived from `src/plong_elven/api/routers/*` and `src/plong_elven/schemas/*`,
+Derived from `src/plong_elven/app/api/routers/*` and `src/plong_elven/app/schemas/*`,
 cross-checked against the live route table (`walk_routes` in
 `tests/test_route_auth.py`, `APP_ENV=dev`): 33 routes (including the WebSocket) plus FastAPI's
 `/openapi.json`, `/docs`, `/docs/oauth2-redirect`, `/redoc`.
@@ -8,7 +8,7 @@ cross-checked against the live route table (`walk_routes` in
 ## Conventions
 
 - JSON field names are camelCase.
-- Datetimes are UTC ISO-8601 ending in `Z` (`UtcDatetime` in `schemas/zones.py`).
+- Datetimes are UTC ISO-8601 ending in `Z` (`UtcDatetime` in `app/schemas/zones.py`).
 - Every error has this shape:
 
 ```json
@@ -42,7 +42,7 @@ cross-checked against the live route table (`walk_routes` in
 
 | What | Limit | Where |
 |---|---|---|
-| `cameraId` path param, zone keys, layout zone ids | `^[A-Za-z0-9_-]{1,64}$` | `schemas/common.py` |
+| `cameraId` path param, zone keys, layout zone ids | `^[A-Za-z0-9_-]{1,64}$` | `app/schemas/common.py` |
 | zones per detections post / per layout | 50 | `DetectionIn`, `ZonesIn` |
 | count per zone | int 0..10000 | `DetectionIn` |
 | zone threshold | int 1..10000 | `LayoutZone` |

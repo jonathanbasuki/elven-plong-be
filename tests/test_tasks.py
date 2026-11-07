@@ -17,9 +17,9 @@ from fastapi.testclient import TestClient
 from sqlalchemy.sql import operators
 from sqlalchemy.sql.elements import BinaryExpression, BindParameter, Null
 
-from plong_elven.api.deps import get_current_user, get_notification_service
-from plong_elven.api.main import app
-from plong_elven.db.models import (
+from plong_elven.app.api.deps import get_current_user, get_notification_service
+from plong_elven.app.api.main import app
+from plong_elven.app.db.models import (
     Task,
     TaskRespondent,
     TaskRespondentStatusId,
@@ -28,8 +28,8 @@ from plong_elven.db.models import (
     UserStatusId,
     Zone,
 )
-from plong_elven.db.session import get_db
-from plong_elven.schemas.tasks import AcceptedStaffOut, FinishOut, TaskOut
+from plong_elven.app.db.session import get_db
+from plong_elven.app.schemas.tasks import AcceptedStaffOut, FinishOut, TaskOut
 
 _OPS = {
     operators.eq: op.eq,

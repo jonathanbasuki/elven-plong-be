@@ -1,8 +1,8 @@
 import pytest
 
-from plong_elven.services.camera_service import CameraService
-from plong_elven.services.errors import AppError
-from plong_elven.state.live_state import LiveState
+from plong_elven.app.services.camera_service import CameraService
+from plong_elven.app.services.errors import AppError
+from plong_elven.core.state.live_state import LiveState
 
 
 def test_raw_and_annotated_frames_are_separate() -> None:

@@ -1,5 +1,5 @@
 # tests/test_route_table.py
-from plong_elven.api.main import app
+from plong_elven.app.api.main import app
 
 ROUTES = {
     ("POST", "/api/v1/auth/login"),

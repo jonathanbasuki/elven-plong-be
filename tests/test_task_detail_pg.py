@@ -7,7 +7,7 @@ from uuid import uuid4
 import pytest
 from conftest import pg_cleanup, pg_zone
 
-from plong_elven.db.models import (
+from plong_elven.app.db.models import (
     Task,
     TaskRespondent,
     TaskRespondentStatusId,
@@ -15,9 +15,9 @@ from plong_elven.db.models import (
     User,
     ZoneLog,
 )
-from plong_elven.schemas.tasks import LiveCrowdOut
-from plong_elven.services.task_service import TaskService
-from plong_elven.state.live_state import Bucket, LiveState
+from plong_elven.app.schemas.tasks import LiveCrowdOut
+from plong_elven.app.services.task_service import TaskService
+from plong_elven.core.state.live_state import Bucket, LiveState
 
 
 def at(hh: int, mm: int) -> datetime:

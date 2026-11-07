@@ -39,7 +39,11 @@ def test_admin_role_migration_seeds_id_3() -> None:
 
 def test_status_lookup_ids_match_the_code() -> None:
     """The partial index and the code compare against these fixed ids."""
-    from plong_elven.db.models import TaskRespondentStatusId, TaskStatusId, UserStatusId
+    from plong_elven.app.db.models import (
+        TaskRespondentStatusId,
+        TaskStatusId,
+        UserStatusId,
+    )
 
     spec = importlib.util.spec_from_file_location(
         "m", _script().get_revision("5c8d2e1f9a63").path

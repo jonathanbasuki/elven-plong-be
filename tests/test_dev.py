@@ -8,16 +8,16 @@ import pytest
 from conftest import FakeSessionFactory, fake_db, fake_user
 from fastapi.testclient import TestClient
 
-from plong_elven.api.deps import (
+from plong_elven.app.api.deps import (
     get_current_user,
     get_db,
     get_push_sender,
     get_session_factory,
 )
-from plong_elven.api.main import app, create_app
-from plong_elven.api.routers.dev import render_page
-from plong_elven.common.settings import get_settings
-from plong_elven.state.live_state import LiveState, get_live_state
+from plong_elven.app.api.main import app, create_app
+from plong_elven.app.api.routers.dev import render_page
+from plong_elven.core.common.settings import get_settings
+from plong_elven.core.state.live_state import LiveState, get_live_state
 
 
 class _NoZonesSession:

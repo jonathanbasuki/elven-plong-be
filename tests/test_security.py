@@ -1,8 +1,8 @@
 # tests/test_security.py
 import pytest
 
-from plong_elven.api import security
-from plong_elven.services.errors import AppError
+from plong_elven.app.api import security
+from plong_elven.app.services.errors import AppError
 
 
 def test_matching_key_passes(monkeypatch) -> None:

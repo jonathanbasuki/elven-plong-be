@@ -5,11 +5,11 @@ from uuid import uuid4
 import jwt
 import pytest
 
-from plong_elven.common.settings import get_settings
-from plong_elven.db.models import Role, User
-from plong_elven.services import auth_service
-from plong_elven.services.auth_service import AuthService, create_access_token
-from plong_elven.services.errors import AppError
+from plong_elven.app.db.models import Role, User
+from plong_elven.app.services import auth_service
+from plong_elven.app.services.auth_service import AuthService, create_access_token
+from plong_elven.app.services.errors import AppError
+from plong_elven.core.common.settings import get_settings
 
 SECRET = "s" * 40
 

@@ -7,7 +7,7 @@ This describes the code on `dev/readjust-erd`. Routes are listed in
 
 | Process | Entry point | Talks to |
 |---|---|---|
-| API | `uvicorn plong_elven.api.main:app` (`make api`) | Postgres, APNs, browsers/iOS app |
+| API | `uvicorn plong_elven.app.api.main:app` (`make api`) | Postgres, APNs, browsers/iOS app |
 | Camera process | `python -m plong_elven.cctv` (`make cctv`) | CCTV device (RTSP/index/file), API over HTTP |
 | Postgres 16 | `infra/docker-compose.yml` (`make db-up`) | API, Alembic |
 
@@ -24,27 +24,27 @@ db session (db/session.py)   SQLAlchemy async session / SessionFactory
 state (state/live_state.py)  in-memory LiveState singleton
 ```
 
-- `api/main.py` `create_app()` includes the routers, adds the `/dev` router only
+- `app/api/main.py` `create_app()` includes the routers, adds the `/dev` router only
   when `APP_ENV=dev`, and installs three exception handlers (`AppError`,
   `HTTPException`, `RequestValidationError`) that all return
   `{"error": {"code", "message"}}`.
-- Services (one per feature, in `services/`): `AuthService`, `TaskService`,
+- Services (one per feature, in `app/services/`): `AuthService`, `TaskService`,
   `CrowdService`, `ZoneService`, `CameraService`. `profile`, `staff` and `dev` have no
   service of their own: they reuse `AuthService`, `TaskService` and others.
-- Internal services (no route of their own, in `services/internal/`): `AlertService`,
+- Internal services (no route of their own, in `app/services/internal/`): `AlertService`,
   `NotificationService`. Only other services call them.
-- Adapters (talk to the outside world, in `adapters/`): `ApnsPushSender`.
-- Helpers (plain functions, no state, in `helpers/`): `zone_status.classify`.
-- `services/errors.py` defines `AppError(status_code, code, message)`.
+- Adapters (talk to the outside world, in `core/adapters/`): `ApnsPushSender`.
+- Helpers (plain functions, no state, in `core/helpers/`): `zone_status.classify`.
+- `app/services/errors.py` defines `AppError(status_code, code, message)`.
 - `tests/test_task_service.py` checks that `task_service.py` does not
   contain the string `fastapi`.
 
-### Interfaces (`services/ports.py`)
+### Interfaces (`app/services/ports.py`)
 
 | Protocol | Method | Implementations |
 |---|---|---|
-| `PushSender` | `async send(tokens, title, body)`; must log, never raise | `ApnsPushSender` (`adapters/apns_sender.py`, APNs HTTP/2 with an ES256 `.p8` JWT cached 50 min); `FakePushSender` in `tests/conftest.py` |
-| `AlertRule` | `evaluate(zone, count, previous_status) -> Alert \| None` | `StatusChangeRule` (`services/internal/alert_service.py`) |
+| `PushSender` | `async send(tokens, title, body)`; must log, never raise | `ApnsPushSender` (`core/adapters/apns_sender.py`, APNs HTTP/2 with an ES256 `.p8` JWT cached 50 min); `FakePushSender` in `tests/conftest.py` |
+| `AlertRule` | `evaluate(zone, count, previous_status) -> Alert \| None` | `StatusChangeRule` (`app/services/internal/alert_service.py`) |
 
 `Alert` is a frozen dataclass: `key`, `cooldown`, `audience_role`, `title`, `body`.
 
@@ -57,10 +57,10 @@ has not passed (`LiveState.last_alert_sent_at`), and calls
 session, selects `push_token` of every user with that role (optionally
 skipping users whose home zone is a given zone), and calls the `PushSender`.
 
-Status is `helpers/zone_status.classify()`: `safe` below the zone's
+Status is `core/helpers/zone_status.classify()`: `safe` below the zone's
 `threshold`, else `crowded`.
 
-### LiveState (`state/live_state.py`)
+### LiveState (`core/state/live_state.py`)
 
 One module-level `LiveState` instance, returned by `get_live_state()` (tests
 override it). Fields:
@@ -73,6 +73,34 @@ override it). Fields:
 | `last_status` | zone id | last classified status |
 | `last_alert_sent_at` | (zone id, alert key) | last push time |
 | `frames` / `raw_frames` | camera id | latest annotated / raw JPEG |
+
+## Where a change usually goes
+
+Folders under `src/plong_elven/`, split by how often a feature touches them:
+`app/` holds the features, `core/` the plumbing, and `cctv/` the separate camera
+program.
+
+**Touched often (the features, `app/`):**
+
+| Folder | What it does | Touch it when |
+|---|---|---|
+| `app/api/` | URLs and who may call them (`routers/`), wiring of services and login/role checks (`deps.py`), app setup and error format (`main.py`) | adding or changing an endpoint |
+| `app/schemas/` | Shape and validation of the JSON going in and out | a request or response changes |
+| `app/services/` | The business rules (tasks, crowd, zones, footage, auth); `internal/` holds alert and notification services used only by other services | logic changes, which is most of the time |
+| `app/db/` | Database tables as Python classes, status id lists, the DB session | a feature stores new data: always together with a new migration in `alembic/versions/` |
+
+A typical feature goes `app/schemas/` → `app/api/routers/` → `app/services/`, plus
+`app/db/models.py` and a migration if it stores something new.
+
+**Touched rarely (the plumbing, `core/`, and the camera program, `cctv/`):**
+
+| Folder | What it does | Touch it when |
+|---|---|---|
+| `core/common/` | `settings.py`: reads `.env` | a feature needs a new setting (also add it to `.env.example` and CONFIGURATION.md) |
+| `core/state/` | In-memory data: live counts, the current 5-minute bucket, alert times, latest frames; lost on restart | a feature needs fast temporary data |
+| `core/helpers/` | Small stateless functions (`classify`: count → safe/crowded) | a rule is shared by several services |
+| `core/adapters/` | Talking to outside services (Apple push) | adding or changing an outside service |
+| `cctv/` | The separate camera program (YOLO, zone counting); not part of the API process | detection or camera changes |
 
 ## Detection flow
 
@@ -104,8 +132,8 @@ GET /api/v1/zones/{id}/crowd reads LiveState; /crowd/history reads zone_logs
 
 ## Task flow
 
-`services/task_service.py`. Statuses are lookup tables with fixed ids
-(`TaskStatusId`, `TaskRespondentStatusId`, `UserStatusId` in `db/models.py`,
+`app/services/task_service.py`. Statuses are lookup tables with fixed ids
+(`TaskStatusId`, `TaskRespondentStatusId`, `UserStatusId` in `app/db/models.py`,
 seeded by migrations `5c8d2e1f9a63`, `c1d2e3f4a5b6` and `d2e3f4a5b6c7`); the API
 shows their lowercase names. Task statuses: `open` (1), `closed` (2),
 `finished` (3), `complete` (4), `ongoing` (5).
@@ -147,7 +175,7 @@ Postgres.
 
 ### Task footage
 
-`services/footage_service.py`. MediaMTX records `cam1` continuously as 2-second
+`app/services/footage_service.py`. MediaMTX records `cam1` continuously as 2-second
 MPEG-TS segments into `MEDIAMTX_RECORDINGS_DIR` (see `infra/mediamtx.yml`,
 written by `scripts/generate_mediamtx_config.py`). For a completed task the job
 picks the segments whose modification time is between `created_at` and
@@ -167,7 +195,7 @@ one recording. The temp MP4 is always removed. At startup, rows still
 | iOS app / API clients | `Authorization: Bearer <access JWT>` (HS256, `type=access`, `ACCESS_TOKEN_MINUTES`, default 15) | `deps.get_current_user` -> `AuthService.user_from_access_token`; user must be active |
 | Role-gated routes | same bearer + role name | `deps.require_role(...)`; roles do not inherit (admin has no dispatch powers) |
 | Token refresh | opaque refresh token (48 bytes, stored as SHA-256 in `refresh_tokens`, `REFRESH_TOKEN_DAYS`, default 30) | `/auth/refresh` revokes the old token and issues a new pair (rotation); `/auth/logout` revokes it and clears the user's `push_token` |
-| Camera process | `X-Internal-Api-Key` header | `api/security.check_internal_key`, constant-time compare; a blank configured key rejects every call, even in dev; bearer tokens are not accepted here |
+| Camera process | `X-Internal-Api-Key` header | `app/api/security.check_internal_key`, constant-time compare; a blank configured key rejects every call, even in dev; bearer tokens are not accepted here |
 | Dev page stream / WS from a browser | `?ticket=` JWT (`type=ticket`, scope `stream:<cameraId>` or `crowd:live`, 60 s) | `AuthService.verify_ticket`; user must be active **and** admin. Tickets are minted only by `POST /dev/tickets`, which exists only with `APP_ENV=dev` |
 
 `WS /api/v1/crowd/live` accepts either a bearer header or a `crowd:live` ticket,
@@ -181,20 +209,22 @@ Roles are seeded by migrations: `floor_staff` (1), `ops_manager` (2), `admin` (3
 
 ```
 src/plong_elven/
-  api/
-    main.py            create_app, error handlers, /healthz, /readyz
-    deps.py            DI: current user, roles, internal key, services
-    security.py        X-Internal-Api-Key check
-    routers/           auth, profile, zones, crowd (+WS), tasks, staff, cameras, dev
-  services/            auth, task, footage, crowd, zone, camera, ports, errors
-    internal/          alert, notification (no route of their own)
-  adapters/            apns_sender (talks to Apple)
-  helpers/             zone_status.classify (plain functions)
-  schemas/             Pydantic request/response models (camelCase)
-  state/live_state.py  in-memory LiveState
-  db/                  base, models (roles, users, user_status, refresh_tokens, zone, zone_logs, task, task_status, task_respondents, task_respondent_status, task_footage), session
-  common/              settings
-  cctv/                camera process: loop (CLI), detector (YOLO), zones (pixel math), zones_poller, overlay, client, uploader
+  app/                   the features (changed often)
+    api/
+      main.py            create_app, error handlers, /healthz, /readyz
+      deps.py            DI: current user, roles, internal key, services
+      security.py        X-Internal-Api-Key check
+      routers/           auth, profile, zones, crowd (+WS), tasks, staff, cameras, dev
+    schemas/             Pydantic request/response models (camelCase)
+    services/            auth, task, footage, crowd, zone, camera, ports, errors
+      internal/          alert, notification (no route of their own)
+    db/                  base, models (roles, users, user_status, refresh_tokens, zone, zone_logs, task, task_status, task_respondents, task_respondent_status, task_footage), session
+  core/                  the plumbing (changed rarely)
+    common/              settings
+    state/live_state.py  in-memory LiveState
+    helpers/             zone_status.classify (plain functions)
+    adapters/            apns_sender (talks to Apple)
+  cctv/                  camera process, run separately: loop (CLI), detector (YOLO), zones (pixel math), zones_poller, overlay, client, uploader
 alembic/versions/      10 migrations
 scripts/               create_user, seed_dispatch, doctor, generate_mediamtx_config, benchmark_cctv
 infra/docker-compose.yml  Postgres 16
