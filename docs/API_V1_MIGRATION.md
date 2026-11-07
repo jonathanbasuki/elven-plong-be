@@ -5,7 +5,9 @@
 > `/api/v1/tasks`, create is `POST /api/v1/tasks/broadcast`, `broadcastId` →
 > `taskId`, `staffNeeded` → `totalStaff`, new required `instruction`), zones
 > have one `threshold` (status is `safe`/`crowded`, no `warning`), and the zone
-> object is `zoneId`, `name`, `threshold`, `isActiveTask`. For the current
+> object is `zoneId`, `name`, `threshold`, `isActiveTask`. Tasks also gained the
+> statuses `ongoing` and `complete`, `POST /tasks/{taskId}/cancel` and
+> `GET /tasks/{taskId}/footage`. For the current
 > contract read [FRONTEND_GUIDE.md](FRONTEND_GUIDE.md) and
 > [API_REFERENCE.md](API_REFERENCE.md).
 

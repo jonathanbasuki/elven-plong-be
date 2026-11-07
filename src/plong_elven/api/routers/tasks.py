@@ -5,7 +5,6 @@ inherit and admin has no dispatch powers: broadcast/finish need ops_manager,
 accept/complete need floor_staff, the list is open to any role.
 """
 
-from typing import Literal
 from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Query
@@ -20,6 +19,7 @@ from plong_elven.schemas.tasks import (
     TaskDetailOut,
     TaskFootageOut,
     TaskOut,
+    TaskStatus,
 )
 from plong_elven.services.task_service import TaskService
 from plong_elven.state.live_state import LiveState, get_live_state
@@ -30,7 +30,7 @@ router = APIRouter(prefix="/api/v1/tasks", tags=["tasks"])
 @router.get("")
 async def list_tasks(
     zoneId: str | None = Query(None),
-    status: list[Literal["open", "closed", "finished"]] | None = Query(None),  # noqa: B008
+    status: list[TaskStatus] | None = Query(None),  # noqa: B008
     limit: int = Query(20, ge=1, le=50),
     service: TaskService = Depends(get_task_service),  # noqa: B008
     _user: User = Depends(get_current_user),  # noqa: B008
@@ -80,11 +80,12 @@ async def accept_task(
 @router.post("/{taskId}/complete")
 async def complete_task(
     taskId: UUID,
+    background_tasks: BackgroundTasks,
     service: TaskService = Depends(get_task_service),  # noqa: B008
     user: User = Depends(require_role("floor_staff")),  # noqa: B008
 ) -> TaskOut:
     """403 not_your_response when this staff member did not accept."""
-    return await service.complete(taskId, user)
+    return await service.complete(taskId, user, background_tasks.add_task)
 
 
 @router.post("/{taskId}/finish")

@@ -72,13 +72,15 @@ async def test_list_returns_dtos_newest_first() -> None:
     assert result[0].taskId == t.task_id
 
 
-def test_task_phase_is_ongoing_only_when_open() -> None:
+def test_task_phase_is_ongoing_while_open_or_ongoing() -> None:
     from plong_elven.db.models import TaskStatusId
     from plong_elven.services.task_service import task_phase
 
     assert task_phase(TaskStatusId.OPEN) == "ongoing"
     assert task_phase(TaskStatusId.CLOSED) == "completed"
     assert task_phase(TaskStatusId.FINISHED) == "completed"
+    assert task_phase(TaskStatusId.ONGOING) == "ongoing"
+    assert task_phase(TaskStatusId.COMPLETE) == "completed"
 
 
 def test_crowd_log_end_rules() -> None:
@@ -113,3 +115,27 @@ def test_crowd_log_end_rules() -> None:
     both_done = [person(at(17, 50)), person(at(18, 5))]
     assert crowd_log_end(closed, both_done, now) == at(18, 5)
     assert crowd_log_end(closed, [], now) == closed.expires_at  # nobody came
+
+
+@pytest.mark.asyncio
+async def test_last_completion_queues_the_footage_job() -> None:
+    """The footage job goes through `defer` (FastAPI BackgroundTasks), not a
+    loose asyncio task that can be garbage-collected or lost."""
+    from test_tasks import MemorySession
+
+    from plong_elven.db.models import TaskStatusId, UserStatusId
+    from plong_elven.services.footage_service import process_task_footage
+
+    session = MemorySession()
+    t = session.add_task()
+    user = session.add_user(fake_user("floor_staff"))
+    user.user_status_id = UserStatusId.DELEGATING
+    session.add_respondent(t, user)
+    deferred = []
+
+    await TaskService(session, notifier=None).complete(
+        t.task_id, user, lambda *args: deferred.append(args)
+    )
+
+    assert t.task_status_id == TaskStatusId.COMPLETE
+    assert deferred == [(process_task_footage, t.task_id)]

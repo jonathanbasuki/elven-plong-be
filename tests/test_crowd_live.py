@@ -120,3 +120,31 @@ def test_old_ws_counts_is_gone() -> None:
         TestClient(app).websocket_connect("/ws/counts") as ws,
     ):
         ws.receive_text()
+
+
+@pytest.mark.asyncio
+async def test_a_stalled_client_does_not_hold_up_the_others(monkeypatch) -> None:
+    """One phone on a bad connection must not stall the camera's count post."""
+    import asyncio
+
+    from plong_elven.api.routers import crowd
+
+    class Stuck:
+        async def send_json(self, _msg) -> None:
+            await asyncio.sleep(60)
+
+    class Fine:
+        def __init__(self) -> None:
+            self.got = []
+
+        async def send_json(self, msg) -> None:
+            self.got.append(msg)
+
+    stuck, fine = Stuck(), Fine()
+    monkeypatch.setattr(crowd, "SEND_TIMEOUT", 0.05)
+    monkeypatch.setattr(crowd, "_clients", {stuck, fine})
+
+    await asyncio.wait_for(crowd.publish_counts("cam1", {"z1": 3}), timeout=2)
+
+    assert fine.got == [{"cameraId": "cam1", "counts": {"z1": 3}}]
+    assert crowd._clients == {fine}  # the stalled one is dropped

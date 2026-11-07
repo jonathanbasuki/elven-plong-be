@@ -2,7 +2,7 @@
 
 Derived from `src/plong_elven/api/routers/*` and `src/plong_elven/schemas/*`,
 cross-checked against the live route table (`walk_routes` in
-`tests/test_route_auth.py`, `APP_ENV=dev`): 31 routes (including the WebSocket) plus FastAPI's
+`tests/test_route_auth.py`, `APP_ENV=dev`): 33 routes (including the WebSocket) plus FastAPI's
 `/openapi.json`, `/docs`, `/docs/oauth2-redirect`, `/redoc`.
 
 ## Conventions
@@ -26,7 +26,8 @@ cross-checked against the live route table (`walk_routes` in
 | 403 | `not_your_response` | complete a task you did not accept |
 | 404 | `not_found` | unknown zone, task, staff, or no frame yet |
 | 409 | `broadcast_open` | broadcast into a zone that already has an active task |
-| 409 | `expired` | accept after `expiresAt`, or a task already `closed`/`finished` |
+| 409 | `expired` | accept after `expiresAt` or on a task no longer `open`; complete on a cancelled task |
+| 409 | `not_open` | cancel a task that is not `open` or `ongoing` |
 | 409 | `own_zone` | accept a task in your own home zone |
 | 409 | `already_delegating` | staff is already on another task |
 | 409 | `slots_full` | `totalStaff` already accepted |
@@ -66,12 +67,14 @@ cross-checked against the live route table (`walk_routes` in
 | GET | `/api/v1/zones/{zoneId}/crowd` | any role | - | `zoneId`, `count`, `status` (`safe`/`crowded`), `observedAt` (null before the first detection) | 401, 404 |
 | GET | `/api/v1/zones/{zoneId}/crowd/history` | any role | query `limit` 1..288, default 12 | list of `bucketStart`, `avgCount`, `peakCount`, newest first; `[]` for unknown zone | 401, 422 |
 | WS | `/api/v1/crowd/live` | `Authorization: Bearer` header or `?ticket=` (scope `crowd:live`) | client messages ignored | server sends `{"cameraId", "counts": {zoneId: n}}` per ingest | close 1008 on auth failure |
-| GET | `/api/v1/tasks` | any role | query `zoneId`, `status` (`open`/`closed`/`finished`; repeat to match several, e.g. `?status=open&status=closed`), `limit` 1..50 default 20 | list of task objects, newest first | 401, 422 |
+| GET | `/api/v1/tasks` | any role | query `zoneId`, `status` (`open`/`ongoing`/`closed`/`complete`/`finished`; repeat to match several, e.g. `?status=open&status=ongoing`), `limit` 1..50 default 20 | list of task objects, newest first | 401, 422 |
 | GET | `/api/v1/tasks/{taskId}` | any role | - | task detail object | 401, 404, 422 |
 | POST | `/api/v1/tasks/broadcast` | `ops_manager` | `zoneId`, `totalStaff` (> 0), `instruction` (1..50 chars) | 201, task object | 401, 403, 404, 409 `broadcast_open`, 422 |
 | POST | `/api/v1/tasks/{taskId}/accept` | `floor_staff` | - | task object (idempotent for the same user) | 401, 403, 404, 409 `expired`/`own_zone`/`already_delegating`/`slots_full`, 422 |
-| POST | `/api/v1/tasks/{taskId}/complete` | `floor_staff` | - | task object | 401, 403 `wrong_role`/`not_your_response`, 404, 422 |
-| POST | `/api/v1/tasks/{taskId}/finish` | `ops_manager` | - | `taskId`, `status` ("finished"), `finishedAt` | 401, 403, 404, 409 `not_all_done`, 422 |
+| POST | `/api/v1/tasks/{taskId}/complete` | `floor_staff` | - | task object; the last helper's completion makes the task `complete` and starts its footage | 401, 403 `wrong_role`/`not_your_response`, 404, 409 `expired` (cancelled), 422 |
+| POST | `/api/v1/tasks/{taskId}/finish` | `ops_manager` | - | `taskId`, `status` ("finished"), `finishedAt`; normally not needed (tasks complete on their own) | 401, 403, 404, 409 `not_all_done`, 422 |
+| POST | `/api/v1/tasks/{taskId}/cancel` | `ops_manager` | - | task object (`closed`); frees the zone and sends unfinished helpers back to `idle` | 401, 403, 404, 409 `not_open`, 422 |
+| GET | `/api/v1/tasks/{taskId}/footage` | any role | - | `taskId`, `status` (`processing`/`ready`/`failed`), `url`, `error` | 401, 404 (no footage yet), 422 |
 | GET | `/api/v1/staff` | any role | query `zoneId` (optional: only staff with that home zone) | list of `staffId`, `name`, `status`, `zoneId`: active `floor_staff` users, ordered by name; `[]` for unknown zone | 401 |
 | GET | `/api/v1/staff/{staffId}` | any role | - | `staffId`, `name`, `status` (`idle`/`delegating`), `zoneId` (home zone or null) | 401, 404, 422 |
 
@@ -83,8 +86,8 @@ cross-checked against the live route table (`walk_routes` in
 |---|---|
 | user | `id` (UUID), `email`, `fullName`, `role` (`floor_staff`/`ops_manager`/`admin`), `isActive` |
 | zone | `zoneId`, `name`, `threshold` (crowded at or above), `isActiveTask` (a task is running in this zone) |
-| task detail | `taskId`, `zoneId`, `zoneName`, `zoneStatus` (`safe`/`crowded`), `instruction`, `status`, `phase` (`ongoing` while `open`, else `completed`), `createdAt`, `expiresAt`, `finishedAt` (null until finished), `totalStaff`, `acceptedCount`, `completedCount`, `liveCrowd` (`count`, `observedAt`; null once completed), `crowdLog` (5-minute `bucketStart`/`avgCount`/`peakCount`, oldest first; `[]` while ongoing), `zoneStaff` (staff objects with this home zone), `delegatedStaff` (same items as `acceptedStaff`) |
-| task | `taskId`, `zoneId`, `status` (`open`/`closed`/`finished`), `totalStaff`, `instruction`, `expiresAt`, `acceptedCount`, `completedCount`, `acceptedStaff` (list of `staffId`, `name`, `status` (`ongoing`/`completed`), `completedAt` or null) |
+| task detail | `taskId`, `zoneId`, `zoneName`, `zoneStatus` (`safe`/`crowded`), `instruction`, `status`, `phase` (`ongoing` while `open` or `ongoing`, else `completed`), `createdAt`, `expiresAt`, `finishedAt` (null until complete, finished or cancelled), `totalStaff`, `acceptedCount`, `completedCount`, `liveCrowd` (`count`, `observedAt`; null once completed), `crowdLog` (5-minute `bucketStart`/`avgCount`/`peakCount`, oldest first; `[]` while ongoing), `zoneStaff` (staff objects with this home zone), `delegatedStaff` (same items as `acceptedStaff`) |
+| task | `taskId`, `zoneId`, `status` (`open`/`ongoing`/`closed`/`complete`/`finished`), `totalStaff`, `instruction`, `expiresAt`, `acceptedCount`, `completedCount`, `acceptedStaff` (list of `staffId`, `name`, `status` (`ongoing`/`completed`), `completedAt` or null) |
 
 ## Camera routes (`/api/v1/cameras/{cameraId}`, `X-Internal-Api-Key`)
 

@@ -1,3 +1,4 @@
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -20,6 +21,9 @@ from plong_elven.api.routers.zones import router as zones_router
 from plong_elven.common.settings import check_security_settings, get_settings
 from plong_elven.db.session import get_db
 from plong_elven.services.errors import AppError
+from plong_elven.services.footage_service import fail_interrupted_footage
+
+logger = logging.getLogger(__name__)
 
 # Map HTTP status codes to error codes (Task 2.2)
 _STATUS_TO_CODE = {
@@ -36,6 +40,11 @@ _STATUS_TO_CODE = {
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     """Application lifespan: validate security settings before accepting requests."""
     check_security_settings(get_settings())
+    try:
+        if failed := await fail_interrupted_footage():
+            logger.warning("marked %d interrupted footage job(s) failed", failed)
+    except Exception:  # a down DB must not stop the API starting
+        logger.exception("could not check for interrupted footage jobs")
     yield
 
 

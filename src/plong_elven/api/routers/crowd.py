@@ -5,6 +5,7 @@ update in-memory live state, fan out to every connected WebSocket, and schedule
 history and alert work in a background task with its own session.
 """
 
+import asyncio
 from datetime import UTC, datetime
 
 from fastapi import (
@@ -37,6 +38,7 @@ router = APIRouter(tags=["crowd"])
 _clients: set[WebSocket] = set()
 
 CROWD_LIVE_SCOPE = "crowd:live"
+SEND_TIMEOUT = 1.0  # seconds a WebSocket client gets to take one message
 
 
 @router.get("/api/v1/zones/{zoneId}/crowd")
@@ -62,15 +64,20 @@ async def get_zone_crowd_history(
 
 
 async def publish_counts(camera_id: str, counts: dict[str, int]) -> None:
-    """Send {"cameraId", "counts"} to every connected client; drop dead sockets."""
+    """Send {"cameraId", "counts"} to every connected client at once; drop dead
+    sockets and any client that takes longer than SEND_TIMEOUT, so one phone on
+    a bad connection cannot stall the camera's count post."""
     message = {"cameraId": camera_id, "counts": counts}
-    dead = set()
-    for ws in list(_clients):
+
+    async def send(ws: WebSocket) -> WebSocket | None:
         try:
-            await ws.send_json(message)
-        except (WebSocketDisconnect, RuntimeError):
-            dead.add(ws)
-    _clients.difference_update(dead)
+            await asyncio.wait_for(ws.send_json(message), SEND_TIMEOUT)
+            return None
+        except (WebSocketDisconnect, RuntimeError, TimeoutError):
+            return ws
+
+    dead = await asyncio.gather(*(send(ws) for ws in list(_clients)))
+    _clients.difference_update(ws for ws in dead if ws is not None)
 
 
 async def ingest_counts(

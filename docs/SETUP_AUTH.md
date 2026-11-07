@@ -36,7 +36,7 @@ Roles do not inherit. Authentication per route group:
 - `WS /api/v1/crowd/live`: a bearer access token, or `?ticket=` with scope
   `crowd:live`.
 - Every other `/api/v1/*` route: a bearer access token for any role.
-- `POST /api/v1/tasks/broadcast` and `.../finish` need `ops_manager`; `.../accept`
+- `POST /api/v1/tasks/broadcast`, `.../cancel` and `.../finish` need `ops_manager`; `.../accept`
   and `.../complete` need `floor_staff`. `admin` has no dispatch powers.
 - `/dev/*` exists only with `APP_ENV=dev`. The page `GET /dev/cameras/{cameraId}`
   needs no login; `GET /dev/cameras/{cameraId}/stream` needs a

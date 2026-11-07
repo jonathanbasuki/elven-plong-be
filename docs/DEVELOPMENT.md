@@ -59,6 +59,8 @@ Alembic, `alembic/versions/`, in order:
 6. `3f1a9c2e7b40` rename to the task schema: `broadcasts` → `task`, `broadcast_responses` → `task_respondents`, `zones` → `zone`, `zone_count_history` → `zone_logs`, `users.id` → `user_id`, `roles.id` → `role_id` (renames only)
 7. `5c8d2e1f9a63` status text columns → lookup tables `task_status`, `task_respondent_status`, `user_status` (fixed ids, backfilled)
 8. `8e4b7a0d2c15` zone: one `threshold` (from `crowded_threshold`), `is_active_task`, drop `map_image_url`; users: `zone_id`, `last_location`, drop `email_verified_at`/`updated_at`/`last_login_at`; task: `instruction`
+9. `c1d2e3f4a5b6` task status `complete` (4); `task_footage` table (one row per completed task's video)
+10. `d2e3f4a5b6c7` task status `ongoing` (5)
 
 Migrations 6–8 are hand-written (autogenerate would turn a rename into drop + create and lose rows). `alembic check` must report no differences after `upgrade head`.
 

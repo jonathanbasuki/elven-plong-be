@@ -727,6 +727,71 @@ def test_floor_staff_cannot_finish(session, client_as, role) -> None:
     _err(client.post(f"/api/v1/tasks/{t.task_id}/finish"), 403, "wrong_role")
 
 
+# --- POST /api/v1/tasks/{id}/cancel ------------------------------------------
+
+
+@pytest.mark.parametrize("status", [TaskStatusId.OPEN, TaskStatusId.ONGOING])
+def test_cancel_releases_staff_and_frees_zone(session, client_as, status) -> None:
+    client, _ = client_as("ops_manager")
+    t = session.add_task(status=status)
+    working = session.add_user(fake_user("floor_staff"))
+    working.user_status_id = UserStatusId.DELEGATING
+    session.add_respondent(t, working)
+    done = session.add_user(fake_user("floor_staff"))
+    done.user_status_id = UserStatusId.DELEGATING  # already on another task
+    session.add_respondent(t, done, completed=True)
+
+    response = client.post(f"/api/v1/tasks/{t.task_id}/cancel")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "closed"
+    assert t.finished_at is not None
+    assert working.user_status_id == UserStatusId.IDLE
+    assert done.user_status_id == UserStatusId.DELEGATING  # untouched
+    assert session.zones["z1"].is_active_task is False
+
+
+def test_cancelled_staff_can_accept_another_task(session, client_as) -> None:
+    manager, _ = client_as("ops_manager")
+    staff_client, staff = client_as("floor_staff")
+    first = session.add_task()
+    staff_client.post(f"/api/v1/tasks/{first.task_id}/accept")
+    app.dependency_overrides[get_current_user] = lambda: session.users[
+        next(u for u, x in session.users.items() if x.role.name == "ops_manager")
+    ]
+    assert manager.post(f"/api/v1/tasks/{first.task_id}/cancel").status_code == 200
+    session.zones["z2"] = Zone(zone_id="z2", name="Z2", polygon=[], threshold=5)
+    second = session.add_task(zone_id="z2")
+    app.dependency_overrides[get_current_user] = lambda: staff
+
+    assert (
+        staff_client.post(f"/api/v1/tasks/{second.task_id}/accept").status_code == 200
+    )
+
+
+@pytest.mark.parametrize("status", [TaskStatusId.FINISHED, TaskStatusId.COMPLETE])
+def test_cancel_after_the_end_is_409(session, client_as, status) -> None:
+    client, _ = client_as("ops_manager")
+    t = session.add_task(status=status)
+    _err(client.post(f"/api/v1/tasks/{t.task_id}/cancel"), 409, "not_open")
+
+
+def test_complete_on_cancelled_task_is_409(session, client_as) -> None:
+    client, user = client_as("floor_staff")
+    t = session.add_task(status=TaskStatusId.CLOSED)
+    t.finished_at = datetime.now(UTC)
+    session.add_respondent(t, user)
+    _err(client.post(f"/api/v1/tasks/{t.task_id}/complete"), 409, "expired")
+
+
+def test_list_accepts_ongoing_and_complete(session, client_as) -> None:
+    client, _ = client_as("floor_staff")
+    o = session.add_task(status=TaskStatusId.ONGOING)
+    c = session.add_task(status=TaskStatusId.COMPLETE)
+    body = client.get("/api/v1/tasks?status=ongoing&status=complete").json()
+    assert {x["taskId"] for x in body} == {str(o.task_id), str(c.task_id)}
+
+
 # --- GET /api/v1/staff/{staffId} ----------------------------------------------
 
 

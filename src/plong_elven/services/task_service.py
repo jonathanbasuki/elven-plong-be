@@ -54,8 +54,11 @@ TASK_OPEN_SECONDS = 20
 
 
 def task_phase(task_status_id: int) -> Literal["ongoing", "completed"]:
-    """ "ongoing" only while a task is open; closed and finished are "completed"."""
-    return "ongoing" if task_status_id == TaskStatusId.OPEN else "completed"
+    """ "ongoing" while a task is open or being worked on; closed (nobody came or
+    cancelled), finished and complete are "completed"."""
+    if task_status_id in (TaskStatusId.OPEN, TaskStatusId.ONGOING):
+        return "ongoing"
+    return "completed"
 
 
 def crowd_log_end(
@@ -311,8 +314,16 @@ class TaskService:
         await self._session.commit()
         return await self._task_out(task)
 
-    async def complete(self, task_id: UUID, user: User) -> TaskOut:
-        """Mark the current user's part of the task done; return its state."""
+    async def complete(
+        self,
+        task_id: UUID,
+        user: User,
+        defer: Callable[..., None] | None = None,
+    ) -> TaskOut:
+        """Mark the current user's part of the task done; return its state.
+
+        When this was the last open part, the task becomes complete and the
+        footage job is handed to `defer` (FastAPI BackgroundTasks.add_task)."""
         task = await self._find_task(task_id)
 
         respondent = await self._session.get(
@@ -322,6 +333,8 @@ class TaskService:
             raise AppError(
                 403, "not_your_response", "This staff member did not accept the task."
             )
+        if task.task_status_id == TaskStatusId.CLOSED:  # cancelled
+            raise AppError(409, "expired", "This task was cancelled.")
         # Only the first completion frees the user; a repeat call must not reset a
         # user who has since accepted another task.
         if respondent.task_respondent_status_id != TaskRespondentStatusId.COMPLETED:
@@ -336,10 +349,8 @@ class TaskService:
                 await _free_zone_if_latest(self._session, task)
                 self._session.add(TaskFootage(task_id=task_id))
             await self._session.commit()
-            if task.task_status_id == TaskStatusId.COMPLETE:
-                import asyncio
-
-                asyncio.create_task(process_task_footage(task_id))
+            if task.task_status_id == TaskStatusId.COMPLETE and defer is not None:
+                defer(process_task_footage, task_id)
         return await self._task_out(task)
 
     async def finish(self, task_id: UUID) -> FinishOut:
@@ -407,11 +418,24 @@ class TaskService:
         )
 
     async def cancel(self, task_id: UUID) -> TaskOut:
-        """Cancel a task while its staff-gathering window is still open."""
+        """Cancel an open or ongoing task. Staff still working on it go back to
+        idle (their respondent rows stay as the record), the task ends now, and
+        the zone is free again."""
         task = await self._find_task(task_id)
-        if task.task_status_id != TaskStatusId.OPEN:
-            raise AppError(409, "not_open", "Only open tasks can be cancelled.")
+        if task.task_status_id not in (TaskStatusId.OPEN, TaskStatusId.ONGOING):
+            raise AppError(
+                409, "not_open", "Only open or ongoing tasks can be cancelled."
+            )
+        rows = await self._session.execute(
+            select(TaskRespondent, User)
+            .join(User, User.user_id == TaskRespondent.staff_id)
+            .where(TaskRespondent.task_id == task_id)
+        )
+        for respondent, user in rows.all():
+            if respondent.task_respondent_status_id != TaskRespondentStatusId.COMPLETED:
+                user.user_status_id = UserStatusId.IDLE
         task.task_status_id = TaskStatusId.CLOSED
+        task.finished_at = datetime.now(UTC)
         await _free_zone_if_latest(self._session, task)
         await self._session.commit()
         return await self._task_out(task)

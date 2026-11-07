@@ -106,7 +106,9 @@ GET /api/v1/zones/{id}/crowd reads LiveState; /crowd/history reads zone_logs
 
 `services/task_service.py`. Statuses are lookup tables with fixed ids
 (`TaskStatusId`, `TaskRespondentStatusId`, `UserStatusId` in `db/models.py`,
-seeded by migration `5c8d2e1f9a63`); the API shows their lowercase names.
+seeded by migrations `5c8d2e1f9a63`, `c1d2e3f4a5b6` and `d2e3f4a5b6c7`); the API
+shows their lowercase names. Task statuses: `open` (1), `closed` (2),
+`finished` (3), `complete` (4), `ongoing` (5).
 
 1. `ops_manager` broadcasts (`POST /api/v1/tasks/broadcast`): the zone row is
    locked (`SELECT ... FOR UPDATE`), expired tasks in the zone are closed, then
@@ -117,23 +119,46 @@ seeded by migration `5c8d2e1f9a63`); the API shows their lowercase names.
    partial unique index `one_open_task_per_zone` (`task_status_id = 1`) is a
    second guard.
 2. `floor_staff` accepts: `SELECT ... FOR UPDATE` locks the task row first, so
-   two staff racing for the last slot are serialized. Then: not open (or just
-   expired, which closes it) -> 409 `expired`; already accepted -> return
-   current state (idempotent); home zone is the task's zone -> 409 `own_zone`;
+   two staff racing for the last slot are serialized. Then: already accepted
+   -> return current state (idempotent); not open (or just expired, which moves
+   it on) -> 409 `expired`; home zone is the task's zone -> 409 `own_zone`;
    user `delegating` -> 409 `already_delegating`; slots taken -> 409
    `slots_full`. On success a `task_respondents` row (`ongoing`) is added and
    the user becomes `delegating`.
-3. `floor_staff` completes: 403 `not_your_response` if they did not accept;
-   the first call sets the respondent `completed` + `completed_at` and the
-   user back to `idle`; a repeat call changes nothing.
-4. `ops_manager` finishes: 409 `not_all_done` unless at least one accepted and
-   all accepted completed; sets `finished`, `finished_at`, and
-   `zone.is_active_task = false`.
+3. `floor_staff` completes: 403 `not_your_response` if they did not accept,
+   409 `expired` if the task was cancelled; the first call sets the respondent
+   `completed` + `completed_at` and the user back to `idle`; a repeat call
+   changes nothing. When it was the last unfinished respondent, the task
+   becomes `complete` with `finished_at` = now, the zone is freed, a
+   `task_footage` row (`processing`) is added, and the footage job is queued
+   with FastAPI `BackgroundTasks`.
+4. `ops_manager` cancels an `open` or `ongoing` task: it becomes `closed` with
+   `finished_at` = now, respondents who had not completed go back to `idle`,
+   and the zone is freed. Otherwise 409 `not_open`.
+5. `ops_manager` finishes (rarely needed now that tasks auto-complete): 409
+   `not_all_done` unless at least one accepted and all accepted completed;
+   sets `finished`, `finished_at`, and frees the zone.
 
 Expiry is lazy (`close_expired_tasks`): reading tasks, reading zones,
-broadcasting, accepting or finishing closes open tasks past `expires_at`. A
-task that closes with no respondents also clears `zone.is_active_task`.
-`tests/test_task_race_pg.py` proves both row locks against real Postgres.
+broadcasting, accepting or finishing moves open tasks past `expires_at` to
+`ongoing` (someone accepted) or `closed` (nobody did, which also frees the
+zone). `tests/test_task_race_pg.py` proves both row locks against real
+Postgres.
+
+### Task footage
+
+`services/footage_service.py`. MediaMTX records `cam1` continuously as 2-second
+MPEG-TS segments into `MEDIAMTX_RECORDINGS_DIR` (see `infra/mediamtx.yml`,
+written by `scripts/generate_mediamtx_config.py`). For a completed task the job
+picks the segments whose modification time is between `created_at` and
+`finished_at`, joins them with `ffmpeg` into an MP4, uploads it to the Supabase
+Storage bucket `SUPABASE_FOOTAGE_BUCKET`, and stores the public URL in
+`task_footage` (`ready`, or `failed` with the error). It then deletes the used
+segments, except those another task may still need (one that is `open` or
+`ongoing`, or whose own footage is still `processing`): all zones share the
+one recording. The temp MP4 is always removed. At startup, rows still
+`processing` (cut off by a restart) are marked `failed`. Served by
+`GET /api/v1/tasks/{taskId}/footage`.
 
 ## Auth model
 
@@ -161,16 +186,16 @@ src/plong_elven/
     deps.py            DI: current user, roles, internal key, services
     security.py        X-Internal-Api-Key check
     routers/           auth, profile, zones, crowd (+WS), tasks, staff, cameras, dev
-  services/            auth, task, crowd, zone, camera, ports, errors
+  services/            auth, task, footage, crowd, zone, camera, ports, errors
     internal/          alert, notification (no route of their own)
   adapters/            apns_sender (talks to Apple)
   helpers/             zone_status.classify (plain functions)
   schemas/             Pydantic request/response models (camelCase)
   state/live_state.py  in-memory LiveState
-  db/                  base, models (roles, users, user_status, refresh_tokens, zone, zone_logs, task, task_status, task_respondents, task_respondent_status), session
+  db/                  base, models (roles, users, user_status, refresh_tokens, zone, zone_logs, task, task_status, task_respondents, task_respondent_status, task_footage), session
   common/              settings
   cctv/                camera process: loop (CLI), detector (YOLO), zones (pixel math), zones_poller, overlay, client, uploader
-alembic/versions/      8 migrations
+alembic/versions/      10 migrations
 scripts/               create_user, seed_dispatch, doctor, generate_mediamtx_config, benchmark_cctv
 infra/docker-compose.yml  Postgres 16
 tests/
@@ -187,8 +212,9 @@ tests/
   camera reads the same set (there is no camera-to-zone mapping yet). Counts
   for an id not in the DB still update live state and the WebSocket, but get
   no history and no alerts. A zone with tasks cannot be deleted.
-- **A task with an unfinished respondent keeps its zone active.** If a
-  respondent never completes, the zone cannot be broadcast again; there is no
-  cancel action yet.
+- **A task with an unfinished respondent keeps its zone active** until that
+  respondent completes or a manager cancels the task.
+- **Footage needs the API and MediaMTX on the same machine.** The job reads
+  the recording files from disk, and runs `ffmpeg` inside the API process.
 - Task listing does one respondent query per task (fine at limit <= 50, per
   a code comment).

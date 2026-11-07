@@ -54,7 +54,7 @@ elven-plong-be/
 | Health/readiness | `GET /healthz`, `GET /readyz` | — |
 | Auth (JWT + refresh tokens, roles) | `POST /api/v1/auth/{login,refresh,logout}`, `GET /api/v1/profile`, `PUT /api/v1/profile/push-token` | [docs/SETUP_AUTH.md](docs/SETUP_AUTH.md), [docs/AUTH_SCHEMA.md](docs/AUTH_SCHEMA.md) |
 | Zones, live crowd, 5-min history | `GET /api/v1/zones[/{zoneId}]`, `GET /api/v1/zones/{zoneId}/crowd[/history]`, `WS /api/v1/crowd/live` | [docs/TASK_API.md](docs/TASK_API.md) |
-| Tasks (broadcast, accept, complete, finish; staff) | `/api/v1/tasks*`, `GET /api/v1/staff/{staffId}` | [docs/TASK_API.md](docs/TASK_API.md) |
+| Tasks (broadcast, accept, complete, cancel, finish, detail, video footage; staff) | `/api/v1/tasks*`, `GET /api/v1/staff[/{staffId}]` | [docs/TASK_API.md](docs/TASK_API.md) |
 | Camera ingestion | `GET /api/v1/cameras/{cameraId}/zones`, `POST /api/v1/cameras/{cameraId}/{detections,frames,frames/raw}` | [docs/SETUP_CCTV.md](docs/SETUP_CCTV.md) |
 | Camera admin: layout, snapshot, live annotated stream (`admin`, `APP_ENV=dev` only) | `GET`/`PUT /dev/cameras/{cameraId}/layout`, `GET /dev/cameras/{cameraId}/snapshot`, `GET /dev/cameras/{cameraId}/stream?ticket=` (ticket from `POST /dev/tickets`) | [docs/SETUP_CCTV.md](docs/SETUP_CCTV.md) |
 | In-browser live view / zone editor / dev tools (`APP_ENV=dev` only) | `GET /dev/cameras/{cameraId}` (no login), `POST /dev/cameras/{cameraId}/detections` (`admin`) | step 11 below |
